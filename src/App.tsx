@@ -25,13 +25,14 @@ import { TemplateDrawer } from './components/TemplateDrawer';
 import { WhiteboardCanvas } from './components/WhiteboardCanvas';
 import { useWhiteboardSync } from './hooks/useWhiteboardSync';
 import { exportAllPagesAsPDF, exportPageAsPNG } from './lib/exportUtils';
-import { FontSizeKey, StrokeSizeKey, ToolType } from './types/whiteboard';
+import { FontSizeKey, STICKY_COLORS, StrokeSizeKey, ToolType } from './types/whiteboard';
 
 export default function App() {
   const wb = useWhiteboardSync();
 
   const [activeTool, setActiveTool] = useState<ToolType>('pen');
   const [color, setColor] = useState<string>('#0F294A');
+  const [stickyColor, setStickyColor] = useState<string>(STICKY_COLORS[0].bg);
   const [strokeSize, setStrokeSize] = useState<StrokeSizeKey>('medium');
   const [fontSize, setFontSize] = useState<FontSizeKey>('md');
 
@@ -565,6 +566,7 @@ export default function App() {
               remoteLiveElement={wb.remoteLiveElement}
               activeTool={activeTool}
               color={color}
+              stickyColor={stickyColor}
               strokeSize={strokeSize}
               fontSize={fontSize}
               readOnly={isCanvasReadOnly}
@@ -632,6 +634,8 @@ export default function App() {
               onSelectTool={setActiveTool}
               color={color}
               onSelectColor={setColor}
+              stickyColor={stickyColor}
+              onSelectStickyColor={setStickyColor}
               strokeSize={strokeSize}
               onSelectStrokeSize={setStrokeSize}
               fontSize={fontSize}

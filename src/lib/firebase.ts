@@ -128,7 +128,23 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         fontSize: Math.round(el.fontSize),
       };
     }
-    if (el.type === 'line' || el.type === 'arrow' || el.type === 'rect') {
+    if (el.type === 'sticky') {
+      return {
+        id: el.id.slice(0, 64),
+        type: 'sticky',
+        color: el.color.slice(0, 16),
+        bgColor: el.bgColor.slice(0, 16),
+        size: Math.round(el.size),
+        opacity: Number(el.opacity.toFixed(2)),
+        x: Math.round(el.x),
+        y: Math.round(el.y),
+        width: Math.max(120, Math.min(480, Math.round(el.width))),
+        height: Math.max(100, Math.min(420, Math.round(el.height))),
+        text: el.text.slice(0, 600),
+        fontSize: Math.round(el.fontSize),
+      };
+    }
+    if (el.type === 'line' || el.type === 'arrow' || el.type === 'rect' || el.type === 'ellipse') {
       return {
         id: el.id.slice(0, 64),
         type: el.type,

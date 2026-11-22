@@ -8,12 +8,15 @@ export const MAX_TEMPLATE_BLOCKS = 20;
 export type ViewMode = 'projector' | 'extend' | 'tablet';
 
 export type ToolType =
+  | 'select'
   | 'pen'
   | 'highlighter'
   | 'text'
+  | 'sticky'
   | 'line'
   | 'arrow'
   | 'rect'
+  | 'ellipse'
   | 'eraser';
 
 export type PaperBackground = 'white' | 'grid' | 'lined' | 'chalkboard';
@@ -35,6 +38,22 @@ export const COLOR_PALETTE: PaletteColor[] = [
   { id: 'orange', label: 'Oranye', hex: '#EA580C', ring: '#F97316' },
   { id: 'teal', label: 'Hijau Teal', hex: '#0D9488', ring: '#14B8A6' },
   { id: 'chalk', label: 'Putih Kapur', hex: '#F8FAFC', ring: '#94A3B8' },
+];
+
+export interface StickyColorOption {
+  id: string;
+  label: string;
+  bg: string;
+  border: string;
+  text: string;
+}
+
+export const STICKY_COLORS: StickyColorOption[] = [
+  { id: 'yellow', label: 'Kuning', bg: '#FEF08A', border: '#CA8A04', text: '#1E293B' },
+  { id: 'mint', label: 'Hijau Mint', bg: '#BBF7D0', border: '#059669', text: '#0F172A' },
+  { id: 'sky', label: 'Biru Langit', bg: '#BAE6FD', border: '#0284C7', text: '#0F172A' },
+  { id: 'peach', label: 'Persik', bg: '#FED7AA', border: '#EA580C', text: '#0F172A' },
+  { id: 'rose', label: 'Merah Muda', bg: '#FECDD3', border: '#E11D48', text: '#0F172A' },
 ];
 
 export const STROKE_WIDTHS: Record<StrokeSizeKey, { label: string; pen: number; highlighter: number }> = {
@@ -71,7 +90,7 @@ export interface StrokeElement extends BaseElement {
 }
 
 export interface ShapeElement extends BaseElement {
-  type: 'line' | 'arrow' | 'rect';
+  type: 'line' | 'arrow' | 'rect' | 'ellipse';
   x1: number;
   y1: number;
   x2: number;
@@ -86,7 +105,18 @@ export interface TextElement extends BaseElement {
   fontSize: number;
 }
 
-export type CanvasElement = StrokeElement | ShapeElement | TextElement;
+export interface StickyNoteElement extends BaseElement {
+  type: 'sticky';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  bgColor: string;
+  fontSize: number;
+}
+
+export type CanvasElement = StrokeElement | ShapeElement | TextElement | StickyNoteElement;
 
 export interface FlipchartPage {
   pageId: string;

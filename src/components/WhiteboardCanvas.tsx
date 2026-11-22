@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Move, Trash2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, Move, Pencil, Trash2, X } from 'lucide-react';
 import {
   findHitElementId,
+  getElementBounds,
   renderBoardCanvas,
+  translateElement,
 } from '../lib/canvasRenderer';
 import {
   CanvasElement,
@@ -10,6 +12,8 @@ import {
   FontSizeKey,
   PaperBackground,
   ShapeElement,
+  STICKY_COLORS,
+  StickyNoteElement,
   STROKE_WIDTHS,
   StrokeElement,
   StrokeSizeKey,
@@ -26,6 +30,7 @@ interface WhiteboardCanvasProps {
   remoteLiveElement: CanvasElement | null;
   activeTool: ToolType;
   color: string;
+  stickyColor?: string;
   strokeSize: StrokeSizeKey;
   fontSize: FontSizeKey;
   readOnly: boolean;
@@ -36,7 +41,7 @@ interface WhiteboardCanvasProps {
 }
 
 interface FloatingTextEditorState {
-  id: string | null; // null = new text, string = editing existing text element
+  id: string | null;
   x: number;
   y: number;
   text: string;
@@ -44,12 +49,27 @@ interface FloatingTextEditorState {
   fontSize: number;
 }
 
+interface FloatingStickyEditorState {
+  id: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  bgColor: string;
+  fontSize: number;
+}
+
+const DEFAULT_STICKY_WIDTH = 240;
+const DEFAULT_STICKY_HEIGHT = 172;
+
 export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   background,
   elements,
   remoteLiveElement,
   activeTool,
   color,
+  stickyColor = STICKY_COLORS[0].bg,
   strokeSize,
   fontSize,
   readOnly,
@@ -61,24 +81,66 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const stickyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [displaySize, setDisplaySize] = useState({ width: 960, height: 540 });
   const [liveElement, setLiveElement] = useState<CanvasElement | null>(null);
   const [hoveredEraseId, setHoveredEraseId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [textEditor, setTextEditor] = useState<FloatingTextEditorState | null>(null);
+  const [stickyEditor, setStickyEditor] = useState<FloatingStickyEditorState | null>(null);
 
   // Refs for low-latency pointer tracking without re-creating handlers
   const isDrawingRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
   const draftElementRef = useRef<CanvasElement | null>(null);
-  const draggingTextRef = useRef<{
-    id: string;
-    offsetX: number;
-    offsetY: number;
-    original: TextElement;
+  const draggingObjectRef = useRef<{
+    original: CanvasElement;
+    startX: number;
+    startY: number;
     moved: boolean;
+    wasAlreadySelected: boolean;
+    openEditorOnTap: boolean;
   } | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
+
+  // Clear selection when leaving Select tool or becoming readOnly
+  useEffect(() => {
+    if (activeTool !== 'select' || readOnly) {
+      setSelectedId(null);
+    }
+  }, [activeTool, readOnly]);
+
+  // Clear selection if the selected element was deleted remotely or via Undo
+  useEffect(() => {
+    if (selectedId && !elements.some((el) => el.id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [elements, selectedId]);
+
+  // Keyboard Delete/Backspace removes the selected object when not typing
+  useEffect(() => {
+    if (!selectedId || readOnly || textEditor || stickyEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        onRemoveElement(selectedId);
+        setSelectedId(null);
+      } else if (e.key === 'Escape') {
+        setSelectedId(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedId, readOnly, textEditor, stickyEditor, onRemoveElement]);
 
   // Keep canvas pixel resolution sharp and strictly 16:9 across resizes & device auto-rotations
   useEffect(() => {
@@ -101,7 +163,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     const handleOrientationShift = () => {
       updateSize();
       if (settleTimer !== null) window.clearTimeout(settleTimer);
-      // Mobile browsers (especially iOS Safari) finalize viewport rect ~120ms after rotation
       settleTimer = window.setTimeout(updateSize, 150);
     };
 
@@ -144,7 +205,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       liveElement,
       remoteLiveElement,
       hoveredEraseId: activeTool === 'eraser' ? hoveredEraseId : null,
-      editingTextId: textEditor?.id ?? null,
+      editingTextId: textEditor?.id ?? stickyEditor?.id ?? null,
+      selectedElementId: !readOnly && activeTool === 'select' ? selectedId : null,
+      hiddenElementId: draggingId,
       showTextFrames: !readOnly && activeTool === 'text',
     });
     ctx.restore();
@@ -155,6 +218,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     remoteLiveElement,
     hoveredEraseId,
     textEditor?.id,
+    stickyEditor?.id,
+    selectedId,
+    draggingId,
     activeTool,
     readOnly,
     displaySize,
@@ -168,6 +234,15 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       textareaRef.current.setSelectionRange(len, len);
     }
   }, [textEditor?.id, textEditor?.x, textEditor?.y]);
+
+  // Focus textarea when opening sticky note editor
+  useEffect(() => {
+    if (stickyEditor && stickyTextareaRef.current) {
+      stickyTextareaRef.current.focus();
+      const len = stickyTextareaRef.current.value.length;
+      stickyTextareaRef.current.setSelectionRange(len, len);
+    }
+  }, [stickyEditor?.id, stickyEditor?.x, stickyEditor?.y]);
 
   const toVirtualCoords = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -207,18 +282,135 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     setTextEditor(null);
   }, [onAddElement, onRemoveElement, onUpdateElement, textEditor]);
 
+  const commitStickyEditor = useCallback(() => {
+    if (!stickyEditor) return;
+    const trimmed = stickyEditor.text.trim();
+    if (trimmed) {
+      const palette = STICKY_COLORS.find(
+        (c) => c.bg.toLowerCase() === stickyEditor.bgColor.toLowerCase()
+      );
+      const payload: StickyNoteElement = {
+        id: stickyEditor.id || createId('stk'),
+        type: 'sticky',
+        x: Math.round(stickyEditor.x),
+        y: Math.round(stickyEditor.y),
+        width: stickyEditor.width,
+        height: stickyEditor.height,
+        text: trimmed.slice(0, 600),
+        bgColor: stickyEditor.bgColor,
+        color: palette?.text || '#0F172A',
+        fontSize: stickyEditor.fontSize,
+        size: 2,
+        opacity: 1,
+      };
+      if (stickyEditor.id) {
+        onUpdateElement(payload);
+      } else {
+        onAddElement(payload);
+      }
+    } else if (stickyEditor.id) {
+      onRemoveElement(stickyEditor.id);
+    }
+    setStickyEditor(null);
+  }, [onAddElement, onRemoveElement, onUpdateElement, stickyEditor]);
+
+  const openEditorForElement = useCallback((el: CanvasElement) => {
+    if (el.type === 'text') {
+      setTextEditor({
+        id: el.id,
+        x: el.x,
+        y: el.y,
+        text: el.text,
+        color: el.color,
+        fontSize: el.fontSize,
+      });
+    } else if (el.type === 'sticky') {
+      setStickyEditor({
+        id: el.id,
+        x: el.x,
+        y: el.y,
+        width: el.width,
+        height: el.height,
+        text: el.text,
+        bgColor: el.bgColor,
+        fontSize: el.fontSize,
+      });
+    }
+  }, []);
+
+  const handleDuplicateSelected = useCallback(() => {
+    if (!selectedId) return;
+    const found = elements.find((el) => el.id === selectedId);
+    if (!found) return;
+    const ctx = canvasRef.current?.getContext('2d') || null;
+    const moved = translateElement(found, 28, 28, ctx);
+    const clone: CanvasElement = {
+      ...moved,
+      id: createId(found.type === 'sticky' ? 'stk' : found.type === 'text' ? 'txt' : 'el'),
+    };
+    onAddElement(clone);
+    setSelectedId(clone.id);
+  }, [elements, onAddElement, selectedId]);
+
+  const handleRecolorSelectedSticky = useCallback(
+    (bg: string) => {
+      if (!selectedId) return;
+      const found = elements.find(
+        (el): el is StickyNoteElement => el.id === selectedId && el.type === 'sticky'
+      );
+      if (!found) return;
+      const palette = STICKY_COLORS.find((c) => c.bg.toLowerCase() === bg.toLowerCase());
+      onUpdateElement({
+        ...found,
+        bgColor: bg,
+        color: palette?.text || '#0F172A',
+      });
+    },
+    [elements, onUpdateElement, selectedId]
+  );
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (readOnly) return;
     if (e.button !== 0 && e.pointerType === 'mouse') return;
 
-    // Commit any active floating text editor before starting a new interaction
+    // Commit any active floating editors before starting a new interaction
     if (textEditor) {
       commitTextEditor();
+    }
+    if (stickyEditor) {
+      commitStickyEditor();
     }
 
     const pt = toVirtualCoords(e.clientX, e.clientY);
     const ctx = canvasRef.current?.getContext('2d') || null;
 
+    // SELECT / MOVE TOOL: grab and drag any object (stroke, shape, ellipse, text, sticky)
+    if (activeTool === 'select') {
+      const hitId = findHitElementId(elements, pt.x, pt.y, ctx, 18, undefined, true);
+      if (!hitId) {
+        setSelectedId(null);
+        return;
+      }
+      const found = elements.find((el) => el.id === hitId);
+      if (!found) return;
+
+      const wasAlreadySelected = selectedId === found.id;
+      setSelectedId(found.id);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      activePointerIdRef.current = e.pointerId;
+      draggingObjectRef.current = {
+        original: found,
+        startX: pt.x,
+        startY: pt.y,
+        moved: false,
+        wasAlreadySelected,
+        openEditorOnTap:
+          wasAlreadySelected && (found.type === 'text' || found.type === 'sticky'),
+      };
+      return;
+    }
+
+    // TEXT TOOL
     if (activeTool === 'text') {
       const hitTextId = findHitElementId(elements, pt.x, pt.y, ctx, 14, 'text');
       if (hitTextId) {
@@ -228,25 +420,68 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         if (found) {
           e.currentTarget.setPointerCapture(e.pointerId);
           activePointerIdRef.current = e.pointerId;
-          draggingTextRef.current = {
-            id: found.id,
-            offsetX: pt.x - found.x,
-            offsetY: pt.y - found.y,
+          draggingObjectRef.current = {
             original: found,
+            startX: pt.x,
+            startY: pt.y,
             moved: false,
+            wasAlreadySelected: true,
+            openEditorOnTap: true,
           };
           return;
         }
       }
 
-      // Open new floating text editor at clicked virtual position
       setTextEditor({
         id: null,
-        x: Math.min(pt.x, VIRTUAL_WIDTH - 240),
-        y: Math.min(pt.y, VIRTUAL_HEIGHT - 80),
+        x: Math.max(16, Math.min(pt.x, VIRTUAL_WIDTH - 240)),
+        y: Math.max(16, Math.min(pt.y, VIRTUAL_HEIGHT - 80)),
         text: '',
         color,
         fontSize: TEXT_SIZES[fontSize].px,
+      });
+      return;
+    }
+
+    // STICKY NOTE TOOL
+    if (activeTool === 'sticky') {
+      const hitStickyId = findHitElementId(elements, pt.x, pt.y, ctx, 12, 'sticky');
+      if (hitStickyId) {
+        const found = elements.find(
+          (el): el is StickyNoteElement => el.id === hitStickyId && el.type === 'sticky'
+        );
+        if (found) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          activePointerIdRef.current = e.pointerId;
+          draggingObjectRef.current = {
+            original: found,
+            startX: pt.x,
+            startY: pt.y,
+            moved: false,
+            wasAlreadySelected: true,
+            openEditorOnTap: true,
+          };
+          return;
+        }
+      }
+
+      const sx = Math.max(
+        16,
+        Math.min(pt.x - DEFAULT_STICKY_WIDTH / 2, VIRTUAL_WIDTH - DEFAULT_STICKY_WIDTH - 16)
+      );
+      const sy = Math.max(
+        16,
+        Math.min(pt.y - DEFAULT_STICKY_HEIGHT / 2, VIRTUAL_HEIGHT - DEFAULT_STICKY_HEIGHT - 16)
+      );
+      setStickyEditor({
+        id: null,
+        x: Math.round(sx),
+        y: Math.round(sy),
+        width: DEFAULT_STICKY_WIDTH,
+        height: DEFAULT_STICKY_HEIGHT,
+        text: '',
+        bgColor: stickyColor,
+        fontSize: 22,
       });
       return;
     }
@@ -281,7 +516,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
-    // Vector Shapes: line, arrow, rect
+    // Vector Shapes: line, arrow, rect, ellipse
     const shape: ShapeElement = {
       id: createId('shp'),
       type: activeTool,
@@ -305,7 +540,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     const ctx = canvasRef.current?.getContext('2d') || null;
 
     // Hover feedback for Eraser when not pressing
-    if (!isDrawingRef.current && !draggingTextRef.current) {
+    if (!isDrawingRef.current && !draggingObjectRef.current) {
       if (activeTool === 'eraser') {
         const hitId = findHitElementId(elements, pt.x, pt.y, ctx, 18);
         setHoveredEraseId(hitId);
@@ -319,19 +554,20 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
-    // Dragging an existing text block
-    if (draggingTextRef.current) {
-      const drag = draggingTextRef.current;
-      const nx = Math.max(12, Math.min(VIRTUAL_WIDTH - 120, Math.round(pt.x - drag.offsetX)));
-      const ny = Math.max(12, Math.min(VIRTUAL_HEIGHT - 40, Math.round(pt.y - drag.offsetY)));
-      if (Math.hypot(nx - drag.original.x, ny - drag.original.y) > 5) {
+    // Dragging an existing object (Select, Text, or Sticky tool)
+    if (draggingObjectRef.current) {
+      const drag = draggingObjectRef.current;
+      const dx = pt.x - drag.startX;
+      const dy = pt.y - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) > 4.5) {
         drag.moved = true;
+        setDraggingId(drag.original.id);
       }
       if (drag.moved) {
-        const movedText: TextElement = { ...drag.original, x: nx, y: ny };
-        draftElementRef.current = movedText;
-        setLiveElement(movedText);
-        onEmitLiveStroke(movedText);
+        const movedObj = translateElement(drag.original, dx, dy, ctx);
+        draftElementRef.current = movedObj;
+        setLiveElement(movedObj);
+        onEmitLiveStroke(movedObj);
       }
       return;
     }
@@ -363,7 +599,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         const ry = Math.round(cPt.y);
         const lastX = nextPts[nextPts.length - 2];
         const lastY = nextPts[nextPts.length - 1];
-        // Filter micro-jitter < 2.5 virtual px for silky Bezier curves and compact Firestore payloads
         if (Math.hypot(rx - lastX, ry - lastY) >= 2.5) {
           nextPts.push(rx, ry);
         }
@@ -376,11 +611,28 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
-    if (draft.type === 'line' || draft.type === 'arrow' || draft.type === 'rect') {
+    if (
+      draft.type === 'line' ||
+      draft.type === 'arrow' ||
+      draft.type === 'rect' ||
+      draft.type === 'ellipse'
+    ) {
+      let x2 = Math.round(pt.x);
+      let y2 = Math.round(pt.y);
+
+      // Shift-constrain: perfect circle/square for ellipse/rect
+      if (e.shiftKey && (draft.type === 'rect' || draft.type === 'ellipse')) {
+        const dx = x2 - draft.x1;
+        const dy = y2 - draft.y1;
+        const side = Math.max(Math.abs(dx), Math.abs(dy));
+        x2 = Math.max(0, Math.min(VIRTUAL_WIDTH, draft.x1 + Math.sign(dx || 1) * side));
+        y2 = Math.max(0, Math.min(VIRTUAL_HEIGHT, draft.y1 + Math.sign(dy || 1) * side));
+      }
+
       const updated: ShapeElement = {
         ...draft,
-        x2: Math.round(pt.x),
-        y2: Math.round(pt.y),
+        x2,
+        y2,
       };
       draftElementRef.current = updated;
       setLiveElement(updated);
@@ -401,27 +653,21 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       // Ignore
     }
 
-    // Finish text drag or open existing text for editing on tap
-    if (draggingTextRef.current) {
-      const drag = draggingTextRef.current;
-      draggingTextRef.current = null;
+    // Finish object drag OR open inline editor on tap
+    if (draggingObjectRef.current) {
+      const drag = draggingObjectRef.current;
+      draggingObjectRef.current = null;
       activePointerIdRef.current = null;
-      if (drag.moved && draftElementRef.current && draftElementRef.current.type === 'text') {
+      setDraggingId(null);
+
+      if (drag.moved && draftElementRef.current) {
         const moved = draftElementRef.current;
         draftElementRef.current = null;
         setLiveElement(null);
         onEmitLiveStroke(null, true);
         onUpdateElement(moved);
-      } else {
-        // User tapped existing text without dragging -> open inline editor to re-edit!
-        setTextEditor({
-          id: drag.original.id,
-          x: drag.original.x,
-          y: drag.original.y,
-          text: drag.original.text,
-          color: drag.original.color,
-          fontSize: drag.original.fontSize,
-        });
+      } else if (drag.openEditorOnTap) {
+        openEditorForElement(drag.original);
       }
       return;
     }
@@ -437,7 +683,12 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (!draft) return;
 
-    if (draft.type === 'line' || draft.type === 'arrow' || draft.type === 'rect') {
+    if (
+      draft.type === 'line' ||
+      draft.type === 'arrow' ||
+      draft.type === 'rect' ||
+      draft.type === 'ellipse'
+    ) {
       if (Math.hypot(draft.x2 - draft.x1, draft.y2 - draft.y1) < 6) {
         return; // Ignore accidental micro-clicks on shapes
       }
@@ -446,16 +697,43 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     onAddElement(draft);
   };
 
+  const selectedElement = useMemo(() => {
+    if (!selectedId || activeTool !== 'select' || readOnly || draggingId) return null;
+    return elements.find((el) => el.id === selectedId) || null;
+  }, [selectedId, activeTool, readOnly, draggingId, elements]);
+
+  const selectedBounds = useMemo(() => {
+    if (!selectedElement) return null;
+    const ctx = canvasRef.current?.getContext('2d') || null;
+    return getElementBounds(selectedElement, ctx);
+  }, [selectedElement]);
+
   const cursorClass = readOnly
     ? 'cursor-default'
+    : activeTool === 'select'
+    ? draggingId
+      ? 'cursor-grabbing'
+      : 'cursor-grab'
     : activeTool === 'text'
     ? 'cursor-text'
-    : activeTool === 'eraser'
+    : activeTool === 'sticky' || activeTool === 'eraser'
     ? 'cursor-pointer'
     : 'cursor-crosshair';
 
   const scaleX = displaySize.width / VIRTUAL_WIDTH;
   const scaleY = displaySize.height / VIRTUAL_HEIGHT;
+
+  // Position floating action toolbar cleanly above (or below if near top) of selected element
+  const selectionBarPos = useMemo(() => {
+    if (!selectedBounds) return null;
+    const centerX = ((selectedBounds.x + selectedBounds.width / 2) / VIRTUAL_WIDTH) * 100;
+    const clampedX = Math.max(16, Math.min(84, centerX));
+    const placeBelow = selectedBounds.y < 76;
+    const topPct = placeBelow
+      ? Math.min(92, ((selectedBounds.y + selectedBounds.height + 16) / VIRTUAL_HEIGHT) * 100)
+      : Math.max(4, ((selectedBounds.y - 16) / VIRTUAL_HEIGHT) * 100);
+    return { left: `${clampedX}%`, top: `${topPct}%`, placeBelow };
+  }, [selectedBounds]);
 
   return (
     <div
@@ -470,6 +748,82 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         onPointerCancel={finishInteraction}
         className={`block w-full h-full board-touch-surface ${cursorClass}`}
       />
+
+      {/* Contextual Floating Action Bar for Selected Object (Select/Move Mode) */}
+      {selectedElement && selectionBarPos && !textEditor && !stickyEditor && (
+        <div
+          style={{
+            left: selectionBarPos.left,
+            top: selectionBarPos.top,
+            transform: selectionBarPos.placeBelow
+              ? 'translate(-50%, 0)'
+              : 'translate(-50%, -100%)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute z-20 flex items-center gap-1 rounded-xl bg-slate-900/95 text-white px-2 py-1.5 shadow-xl border border-slate-700"
+        >
+          {(selectedElement.type === 'text' || selectedElement.type === 'sticky') && (
+            <button
+              type="button"
+              onClick={() => openEditorForElement(selectedElement)}
+              title="Ubah isi teks"
+              className="min-h-[34px] px-2 rounded-lg hover:bg-slate-800 text-xs font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+            >
+              <Pencil className="w-3.5 h-3.5 text-teal-400" />
+              <span>Edit</span>
+            </button>
+          )}
+
+          {selectedElement.type === 'sticky' && (
+            <div className="flex items-center gap-1 px-1 border-x border-slate-700">
+              {STICKY_COLORS.map((swatch) => {
+                const active =
+                  selectedElement.bgColor.toLowerCase() === swatch.bg.toLowerCase();
+                return (
+                  <button
+                    key={swatch.id}
+                    type="button"
+                    onClick={() => handleRecolorSelectedSticky(swatch.bg)}
+                    title={`Ganti warna ${swatch.label}`}
+                    aria-label={`Warna sticky ${swatch.label}`}
+                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-transform ${
+                      active ? 'ring-2 ring-white scale-105' : 'hover:scale-105'
+                    }`}
+                  >
+                    <span
+                      className="w-4 h-4 rounded-full block border border-black/15"
+                      style={{ backgroundColor: swatch.bg }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleDuplicateSelected}
+            title="Duplikat objek"
+            className="min-h-[34px] px-2 rounded-lg hover:bg-slate-800 text-xs font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Duplikat</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              onRemoveElement(selectedElement.id);
+              setSelectedId(null);
+            }}
+            title="Hapus objek (Del)"
+            className="min-h-[34px] px-2 rounded-lg hover:bg-red-600/20 text-red-400 hover:text-red-300 text-xs font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Hapus</span>
+          </button>
+        </div>
+      )}
 
       {/* Floating Inline Text Editor anchored strictly to virtual 1280x720 coordinates */}
       {textEditor && !readOnly && (
@@ -544,6 +898,106 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                   Tempel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Inline Sticky Note Editor anchored strictly to virtual 1280x720 coordinates */}
+      {stickyEditor && !readOnly && (
+        <div
+          style={{
+            left: `${(stickyEditor.x / VIRTUAL_WIDTH) * 100}%`,
+            top: `${(stickyEditor.y / VIRTUAL_HEIGHT) * 100}%`,
+            width: `${Math.max(210, Math.round(stickyEditor.width * scaleX))}px`,
+          }}
+          className="absolute z-20 max-w-[88%]"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{ backgroundColor: stickyEditor.bgColor }}
+            className="rounded-xl border-2 border-slate-900/25 shadow-xl p-2.5"
+          >
+            {/* Quick Sticky Color Row */}
+            <div className="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-black/10">
+              <div className="flex items-center gap-1">
+                {STICKY_COLORS.map((swatch) => {
+                  const active =
+                    stickyEditor.bgColor.toLowerCase() === swatch.bg.toLowerCase();
+                  return (
+                    <button
+                      key={swatch.id}
+                      type="button"
+                      onClick={() =>
+                        setStickyEditor((prev) => (prev ? { ...prev, bgColor: swatch.bg } : null))
+                      }
+                      title={swatch.label}
+                      className={`w-6 h-6 rounded-full flex items-center justify-center transition-transform ${
+                        active ? 'ring-2 ring-slate-900 scale-105' : 'hover:scale-105'
+                      }`}
+                    >
+                      <span
+                        className="w-4 h-4 rounded-full block border border-black/20"
+                        style={{ backgroundColor: swatch.bg }}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700/75">
+                Catatan
+              </span>
+            </div>
+
+            <textarea
+              ref={stickyTextareaRef}
+              value={stickyEditor.text}
+              onChange={(e) =>
+                setStickyEditor((prev) => (prev ? { ...prev, text: e.target.value } : null))
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setStickyEditor(null);
+                } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  commitStickyEditor();
+                }
+              }}
+              placeholder="Tulis poin sticky note..."
+              rows={3}
+              className="w-full resize-none bg-transparent font-display text-base sm:text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-600/70 leading-snug"
+            />
+
+            <div className="mt-1.5 flex items-center justify-end gap-1 border-t border-black/10 pt-1.5">
+              {stickyEditor.id && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRemoveElement(stickyEditor.id!);
+                    setStickyEditor(null);
+                  }}
+                  className="p-1.5 rounded-md text-red-700 hover:bg-red-500/15 transition-colors mr-auto"
+                  title="Hapus Sticky Note"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setStickyEditor(null)}
+                className="p-1.5 rounded-md text-slate-700 hover:bg-black/10 transition-colors"
+                title="Batal"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={commitStickyEditor}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition-colors"
+              >
+                <Check className="w-3.5 h-3.5" />
+                Tempel
+              </button>
             </div>
           </div>
         </div>

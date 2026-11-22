@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
 import {
   ArrowUpRight,
+  Circle,
   Eraser,
   Grid3X3,
   Highlighter,
   LayoutTemplate,
   Minus,
+  MousePointer2,
   PenTool,
   Redo2,
   Rows3,
   Square,
+  StickyNote,
   Trash2,
   Type,
   Undo2,
@@ -19,6 +22,7 @@ import {
   FontSizeKey,
   PAPER_BACKGROUNDS,
   PaperBackground,
+  STICKY_COLORS,
   STROKE_WIDTHS,
   StrokeSizeKey,
   TEXT_SIZES,
@@ -30,6 +34,8 @@ interface DrawingToolbarProps {
   onSelectTool: (tool: ToolType) => void;
   color: string;
   onSelectColor: (hex: string) => void;
+  stickyColor: string;
+  onSelectStickyColor: (bgHex: string) => void;
   strokeSize: StrokeSizeKey;
   onSelectStrokeSize: (size: StrokeSizeKey) => void;
   fontSize: FontSizeKey;
@@ -46,12 +52,15 @@ interface DrawingToolbarProps {
 }
 
 const TOOLS: { id: ToolType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'select', label: 'Pilih', icon: MousePointer2 },
   { id: 'pen', label: 'Spidol', icon: PenTool },
   { id: 'highlighter', label: 'Stabilo', icon: Highlighter },
   { id: 'text', label: 'Teks', icon: Type },
+  { id: 'sticky', label: 'Catatan', icon: StickyNote },
   { id: 'line', label: 'Garis', icon: Minus },
   { id: 'arrow', label: 'Panah', icon: ArrowUpRight },
   { id: 'rect', label: 'Kotak', icon: Square },
+  { id: 'ellipse', label: 'Lingkaran', icon: Circle },
   { id: 'eraser', label: 'Hapus', icon: Eraser },
 ];
 
@@ -60,6 +69,8 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onSelectTool,
   color,
   onSelectColor,
+  stickyColor,
+  onSelectStickyColor,
   strokeSize,
   onSelectStrokeSize,
   fontSize,
@@ -116,40 +127,73 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
 
       <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
 
-      {/* High-Contrast Color Palette */}
-      <div className="flex items-center gap-1.5 shrink-0" aria-label="Warna Tinta">
-        {COLOR_PALETTE.map((swatch) => {
-          const isSelected = color === swatch.hex;
-          const isLight = swatch.hex === '#F8FAFC';
-          return (
-            <button
-              key={swatch.id}
-              type="button"
-              onClick={() => {
-                onSelectColor(swatch.hex);
-                if (activeTool === 'eraser') onSelectTool('pen');
-              }}
-              title={swatch.label}
-              aria-label={`Warna ${swatch.label}`}
-              className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-transform active:scale-95 ${
-                isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
-              }`}
-            >
-              <span
-                className={`w-6 h-6 rounded-full block ${
-                  isLight ? 'border border-slate-300 shadow-inner' : ''
+      {/* Contextual Palette: Sticky Note Pastel Colors OR High-Contrast Ink Colors */}
+      {activeTool === 'sticky' ? (
+        <div className="flex items-center gap-1.5 shrink-0" aria-label="Warna Catatan Tempel">
+          {STICKY_COLORS.map((swatch) => {
+            const isSelected = stickyColor.toLowerCase() === swatch.bg.toLowerCase();
+            return (
+              <button
+                key={swatch.id}
+                type="button"
+                onClick={() => onSelectStickyColor(swatch.bg)}
+                title={`Catatan ${swatch.label}`}
+                aria-label={`Warna catatan ${swatch.label}`}
+                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-transform active:scale-95 ${
+                  isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
                 }`}
-                style={{ backgroundColor: swatch.hex }}
-              />
-            </button>
-          );
-        })}
-      </div>
+              >
+                <span
+                  className="w-6 h-6 rounded-md block border shadow-xs"
+                  style={{ backgroundColor: swatch.bg, borderColor: swatch.border }}
+                />
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 shrink-0" aria-label="Warna Tinta">
+          {COLOR_PALETTE.map((swatch) => {
+            const isSelected = color === swatch.hex;
+            const isLight = swatch.hex === '#F8FAFC';
+            return (
+              <button
+                key={swatch.id}
+                type="button"
+                onClick={() => {
+                  onSelectColor(swatch.hex);
+                  if (activeTool === 'eraser' || activeTool === 'select') onSelectTool('pen');
+                }}
+                title={swatch.label}
+                aria-label={`Warna ${swatch.label}`}
+                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-transform active:scale-95 ${
+                  isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
+                }`}
+              >
+                <span
+                  className={`w-6 h-6 rounded-full block ${
+                    isLight ? 'border border-slate-300 shadow-inner' : ''
+                  }`}
+                  style={{ backgroundColor: swatch.hex }}
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
 
-      {/* Contextual Thickness OR Text Size */}
-      {activeTool === 'text' ? (
+      {/* Contextual Hint / Text Size / Stroke Thickness */}
+      {activeTool === 'select' ? (
+        <span className="hidden md:inline-flex items-center px-2.5 py-1.5 rounded-xl bg-teal-50 text-teal-800 text-xs font-medium whitespace-nowrap shrink-0">
+          Ketuk & geser objek · Ketuk 2× teks/catatan untuk edit
+        </span>
+      ) : activeTool === 'sticky' ? (
+        <span className="hidden md:inline-flex items-center px-2.5 py-1.5 rounded-xl bg-amber-50 text-amber-900 text-xs font-medium whitespace-nowrap shrink-0">
+          Ketuk area kosong untuk menempel catatan baru
+        </span>
+      ) : activeTool === 'text' ? (
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0">
           {(Object.keys(TEXT_SIZES) as FontSizeKey[]).map((key) => (
             <button
