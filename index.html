@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="id" translate="no" class="notranslate">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="google" content="notranslate" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>FlipCast — Papan Tulis & Flipchart Interaktif</title>
+    <meta name="description" content="Papan tulis dan flipchart interaktif real-time lintas perangkat (Laptop Proyektor & Tablet/HP Remote) berbasis koordinat presisi 16:9, sinkronisasi Firebase Firestore, PWA, dan ekspor PDF multi-halaman." />
+    <meta property="og:title" content="FlipCast — Papan Tulis & Flipchart Interaktif" />
+    <meta property="og:description" content="Tulis dari Tablet/HP dengan stylus atau jari, tampil langsung secara presisi 16:9 di layar Proyektor secara real-time." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0F172A" />
+    <meta name="application-name" content="FlipCast" />
+    <meta name="msapplication-TileColor" content="#0F172A" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="FlipCast" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..600&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <script>
+      window.__papanDeferredPrompt = null;
+      window.addEventListener('beforeinstallprompt', function (e) {
+        e.preventDefault();
+        window.__papanDeferredPrompt = e;
+        window.dispatchEvent(new CustomEvent('papan:install-ready'));
+      });
+    </script>
+  </head>
+  <body class="bg-slate-100 text-slate-900 antialiased selection:bg-teal-100 selection:text-teal-900">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

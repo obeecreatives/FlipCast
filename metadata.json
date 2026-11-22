@@ -1,0 +1,6 @@
+{
+  "name": "PapanLive — Papan Tulis & Flipchart Interaktif",
+  "description": "Papan tulis dan flipchart interaktif real-time lintas perangkat (Laptop Proyektor & Tablet/HP Remote) berbasis koordinat presisi 16:9, sinkronisasi Firebase Firestore, PWA, dan ekspor PDF multi-halaman.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

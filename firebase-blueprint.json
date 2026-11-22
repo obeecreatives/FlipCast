@@ -1,0 +1,290 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Shared real-time whiteboard and flipchart room connecting a Projector/Laptop host and Tablet/Mobile remote.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique room identifier matching the document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the host who created the room (immutable)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display title of the whiteboard session."
+        },
+        "activePageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "ID of the currently active flipchart page displayed on the projector."
+        },
+        "pageOrder": {
+          "type": "array",
+          "description": "Ordered list of flipchart page IDs (max 50 pages)."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user who last modified the room state."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the room was created (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the room was last updated."
+        }
+      },
+      "required": [
+        "roomId",
+        "ownerId",
+        "title",
+        "activePageId",
+        "pageOrder",
+        "updatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoomEditor": {
+      "title": "RoomEditor",
+      "description": "Collaborator membership record for a shared whiteboard room joined via direct room link or QR code.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "presenter"]
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "roomId",
+        "role",
+        "joinedAt"
+      ]
+    },
+    "FlipchartPage": {
+      "title": "FlipchartPage",
+      "description": "Single 16:9 flipchart sheet belonging to a room, containing background settings and vector canvas elements.",
+      "type": "object",
+      "properties": {
+        "pageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "background": {
+          "type": "string",
+          "enum": ["white", "grid", "lined", "chalkboard"]
+        },
+        "order": {
+          "type": "integer"
+        },
+        "elements": {
+          "type": "array",
+          "description": "Bounded list of native vector drawing elements (max 400 elements per page)."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "pageId",
+        "roomId",
+        "ownerId",
+        "name",
+        "background",
+        "order",
+        "elements",
+        "updatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LiveStroke": {
+      "title": "LiveStroke",
+      "description": "Ephemeral in-progress stroke broadcast while the speaker is actively drawing on a tablet/phone.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "pageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "element": {
+          "type": "object",
+          "description": "In-progress vector stroke or shape map when active is true, or empty map when cleared."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "roomId",
+        "pageId",
+        "active",
+        "element",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "NoteTemplate": {
+      "title": "NoteTemplate",
+      "description": "Reusable quick-insert whiteboard note framework owned privately by a user.",
+      "type": "object",
+      "properties": {
+        "templateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "background": {
+          "type": "string",
+          "enum": ["white", "grid", "lined", "chalkboard"]
+        },
+        "blocks": {
+          "type": "array",
+          "description": "Bounded list of text block definitions (max 20 blocks)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "templateId",
+        "userId",
+        "title",
+        "category",
+        "background",
+        "blocks",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/Room" },
+      "description": "Active whiteboard & flipchart rooms."
+    },
+    "/rooms/{roomId}/editors/{editorUid}": {
+      "schema": { "$ref": "#/entities/RoomEditor" },
+      "description": "Verified presenters collaborating on a room via direct room code/QR."
+    },
+    "/rooms/{roomId}/pages/{pageId}": {
+      "schema": { "$ref": "#/entities/FlipchartPage" },
+      "description": "Individual 16:9 flipchart sheets inside a room."
+    },
+    "/rooms/{roomId}/liveStroke/{slotId}": {
+      "schema": { "$ref": "#/entities/LiveStroke" },
+      "description": "Single-slot real-time in-progress stroke preview (slotId = 'current')."
+    },
+    "/users/{userId}/templates/{templateId}": {
+      "schema": { "$ref": "#/entities/NoteTemplate" },
+      "description": "Private reusable flipchart note templates belonging to a user."
+    }
+  }
+}

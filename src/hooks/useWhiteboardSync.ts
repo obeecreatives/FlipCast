@@ -1,0 +1,1268 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  Unsubscribe,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import {
+  auth,
+  db,
+  handleFirestoreError,
+  isPermissionError,
+  isQuotaError,
+  OperationType,
+  sanitizeElementsForFirestore,
+  signInWithGoogle,
+  signOutGoogle,
+} from '../lib/firebase';
+import {
+  BUILTIN_TEMPLATES,
+  CanvasElement,
+  createId,
+  FlipchartPage,
+  generateRoomCode,
+  MAX_ELEMENTS_PER_PAGE,
+  MAX_PAGES,
+  MAX_TEMPLATE_BLOCKS,
+  PaperBackground,
+  QuickTemplate,
+  sanitizeId,
+  ViewMode,
+} from '../types/whiteboard';
+
+const LOCAL_STORAGE_PREFIX = 'flipcast_room_v1_';
+const LOCAL_TEMPLATES_KEY = 'flipcast_custom_templates_v1';
+const LAST_ROOM_KEY = 'flipcast_last_room_id';
+
+interface PersistedRoomLocal {
+  roomId: string;
+  title: string;
+  activePageId: string;
+  pages: FlipchartPage[];
+  updatedAtMs: number;
+}
+
+interface BroadcastPacket {
+  senderId: string;
+  type: 'state' | 'liveStroke';
+  roomId: string;
+  payload: unknown;
+}
+
+export type CloudSyncState =
+  | 'local'
+  | 'connecting'
+  | 'synced'
+  | 'room-not-found'
+  | 'error';
+
+const localRoomMemoryCache = new Map<string, { raw: string; data: PersistedRoomLocal }>();
+let customTemplatesMemoryCache: { raw: string; data: QuickTemplate[] } | null = null;
+
+function createInitialPage(index = 0): FlipchartPage {
+  return {
+    pageId: index === 0 ? 'lembar-1' : createId('lembar'),
+    name: `Lembar ${index + 1}`,
+    background: 'white',
+    order: index,
+    elements: [],
+    updatedAtMs: Date.now(),
+  };
+}
+
+function loadLocalRoom(roomId: string): PersistedRoomLocal {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_PREFIX}${roomId}`);
+    if (raw) {
+      const cached = localRoomMemoryCache.get(roomId);
+      if (cached && cached.raw === raw) {
+        return cached.data;
+      }
+      const parsed = JSON.parse(raw) as PersistedRoomLocal;
+      if (Array.isArray(parsed.pages) && parsed.pages.length > 0) {
+        const normalized: PersistedRoomLocal = {
+          roomId,
+          title: parsed.title || 'Sesi Papan Tulis',
+          activePageId: parsed.activePageId || parsed.pages[0].pageId,
+          pages: parsed.pages,
+          updatedAtMs: parsed.updatedAtMs || Date.now(),
+        };
+        localRoomMemoryCache.set(roomId, { raw, data: normalized });
+        return normalized;
+      }
+    }
+  } catch {
+    // Ignore corrupt localStorage
+  }
+
+  const first = createInitialPage(0);
+  return {
+    roomId,
+    title: 'Sesi Papan Tulis',
+    activePageId: first.pageId,
+    pages: [first],
+    updatedAtMs: Date.now(),
+  };
+}
+
+function loadCustomTemplatesLocal(): QuickTemplate[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_TEMPLATES_KEY);
+    if (raw) {
+      if (customTemplatesMemoryCache && customTemplatesMemoryCache.raw === raw) {
+        return customTemplatesMemoryCache.data;
+      }
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        customTemplatesMemoryCache = { raw, data: parsed };
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return [];
+}
+
+function isTouchMobileOrTabletDevice(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Tablet/i.test(ua)) {
+    return true;
+  }
+  // iPadOS 13+ reports Macintosh UA with multi-touch support
+  if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) {
+    return true;
+  }
+  // Primary coarse pointer (touch/stylus-first devices) on tablet/phone viewport widths
+  if (window.matchMedia?.('(pointer: coarse)').matches && window.innerWidth <= 1280) {
+    return true;
+  }
+  return false;
+}
+
+function parseUrlParams(): { viewMode: ViewMode; roomId: string } {
+  const params = new URLSearchParams(window.location.search);
+  const rawView = (params.get('view') || '').toLowerCase();
+  let viewMode: ViewMode;
+  if (rawView === 'tablet' || rawView === 'remote') {
+    viewMode = 'tablet';
+  } else if (rawView === 'extend') {
+    viewMode = 'extend';
+  } else if (rawView === 'projector' || rawView === 'main') {
+    viewMode = 'projector';
+  } else {
+    // Auto-detect: Phone / Tablet opens directly as Remote; Laptop / PC opens as Main Projector
+    viewMode = isTouchMobileOrTabletDevice() ? 'tablet' : 'projector';
+  }
+
+  const rawRoom = sanitizeId(params.get('room') || '', 32).toUpperCase();
+  if (rawRoom.length >= 4) {
+    try {
+      localStorage.setItem(LAST_ROOM_KEY, rawRoom);
+    } catch {
+      // Ignore
+    }
+    return { viewMode, roomId: rawRoom };
+  }
+
+  let savedRoom = '';
+  try {
+    savedRoom = sanitizeId(localStorage.getItem(LAST_ROOM_KEY) || '', 32).toUpperCase();
+  } catch {
+    // Ignore
+  }
+
+  const roomId = savedRoom.length >= 4 ? savedRoom : generateRoomCode();
+  try {
+    localStorage.setItem(LAST_ROOM_KEY, roomId);
+  } catch {
+    // Ignore
+  }
+  return { viewMode, roomId };
+}
+
+export function useWhiteboardSync() {
+  const initial = useMemo(() => parseUrlParams(), []);
+  const clientInstanceId = useRef(createId('cli'));
+
+  const [viewMode, setViewMode] = useState<ViewMode>(initial.viewMode);
+  const [roomId, setRoomId] = useState<string>(initial.roomId);
+
+  const initialRoomData = useMemo(() => loadLocalRoom(initial.roomId), [initial.roomId]);
+
+  const [roomTitle, setRoomTitle] = useState<string>(initialRoomData.title);
+  const [pages, setPages] = useState<FlipchartPage[]>(initialRoomData.pages);
+  const [activePageId, setActivePageId] = useState<string>(initialRoomData.activePageId);
+
+  // Tablet Live Broadcast toggle (ON = syncs immediately to Projector, OFF = local draft)
+  const [isLiveBroadcast, setIsLiveBroadcast] = useState<boolean>(true);
+
+  // Laptop Mirror vs Direct Edit toggle
+  const [laptopCanEdit, setLaptopCanEdit] = useState<boolean>(true);
+
+  // Remote live in-progress stroke preview
+  const [remoteLiveElement, setRemoteLiveElement] = useState<CanvasElement | null>(null);
+  const [remoteLivePageId, setRemoteLivePageId] = useState<string | null>(null);
+
+  // Per-page Undo & Redo history stacks
+  const [undoStacks, setUndoStacks] = useState<Record<string, CanvasElement[][]>>({});
+  const [redoStacks, setRedoStacks] = useState<Record<string, CanvasElement[][]>>({});
+
+  // Firebase Auth & Cloud sync state
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [cloudState, setCloudState] = useState<CloudSyncState>('local');
+  const [cloudMessage, setCloudMessage] = useState<string>('');
+  const [roomOwnerId, setRoomOwnerId] = useState<string | null>(null);
+  const [customTemplates, setCustomTemplates] = useState<QuickTemplate[]>(() =>
+    loadCustomTemplatesLocal()
+  );
+
+  // Refs to prevent stale closures and feedback loops
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const activePageIdRef = useRef(activePageId);
+  activePageIdRef.current = activePageId;
+  const isLiveBroadcastRef = useRef(isLiveBroadcast);
+  isLiveBroadcastRef.current = isLiveBroadcast;
+  const roomOwnerIdRef = useRef(roomOwnerId);
+  roomOwnerIdRef.current = roomOwnerId;
+  const cloudStateRef = useRef(cloudState);
+  cloudStateRef.current = cloudState;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const roomTitleRef = useRef(roomTitle);
+  roomTitleRef.current = roomTitle;
+
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const lastLiveStrokePushRef = useRef<number>(0);
+
+  // Sync URL query params cleanly without full page reload
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', roomId);
+    if (viewMode === 'projector' && !isTouchMobileOrTabletDevice()) {
+      url.searchParams.delete('view');
+    } else {
+      url.searchParams.set('view', viewMode);
+    }
+    window.history.replaceState({}, '', url.toString());
+    try {
+      localStorage.setItem(LAST_ROOM_KEY, roomId);
+    } catch {
+      // Ignore
+    }
+  }, [roomId, viewMode]);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // Persist local room state
+  const saveToLocal = useCallback(
+    (nextPages: FlipchartPage[], nextActiveId: string, overrides?: Partial<PersistedRoomLocal>) => {
+      const snapshot: PersistedRoomLocal = {
+        roomId,
+        title: overrides?.title ?? roomTitleRef.current,
+        activePageId: nextActiveId,
+        pages: nextPages,
+        updatedAtMs: Date.now(),
+      };
+      try {
+        localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${roomId}`, JSON.stringify(snapshot));
+      } catch {
+        // Ignore storage quota errors
+      }
+      return snapshot;
+    },
+    [roomId]
+  );
+
+  // BroadcastChannel for zero-latency local multi-tab sync (e.g. ?view=extend on 2nd monitor)
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel(`flipcast-sync-${roomId}`);
+    channelRef.current = ch;
+
+    ch.onmessage = (event: MessageEvent<BroadcastPacket>) => {
+      const msg = event.data;
+      if (!msg || msg.senderId === clientInstanceId.current || msg.roomId !== roomId) return;
+
+      // In Tablet Draft mode (Live OFF), ignore incoming overwrites to avoid clobbering local draft
+      if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+
+      if (msg.type === 'state') {
+        const incoming = msg.payload as PersistedRoomLocal;
+        if (incoming && Array.isArray(incoming.pages) && incoming.pages.length > 0) {
+          setPages(incoming.pages);
+          setActivePageId(incoming.activePageId);
+          setRoomTitle(incoming.title);
+          setRemoteLiveElement(null);
+        }
+      } else if (msg.type === 'liveStroke') {
+        const live = msg.payload as { pageId: string; element: CanvasElement | null };
+        setRemoteLivePageId(live.pageId);
+        setRemoteLiveElement(live.element);
+      }
+    };
+
+    return () => {
+      ch.close();
+      channelRef.current = null;
+    };
+  }, [roomId, viewMode]);
+
+  const broadcastLocalState = useCallback(
+    (snapshot: PersistedRoomLocal) => {
+      if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+      channelRef.current?.postMessage({
+        senderId: clientInstanceId.current,
+        type: 'state',
+        roomId,
+        payload: snapshot,
+      } satisfies BroadcastPacket);
+    },
+    [roomId, viewMode]
+  );
+
+  // Load user's private custom templates from Firestore when signed in
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified) return;
+
+    const tplPath = `users/${user.uid}/templates`;
+    const q = query(collection(db, tplPath), where('userId', '==', user.uid));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const fetched: QuickTemplate[] = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            templateId: String(data.templateId || d.id),
+            title: String(data.title || 'Template'),
+            category: String(data.category || 'Kustom'),
+            background: (data.background as PaperBackground) || 'white',
+            blocks: Array.isArray(data.blocks) ? data.blocks : [],
+          };
+        });
+        setCustomTemplates(fetched);
+        try {
+          localStorage.setItem(LOCAL_TEMPLATES_KEY, JSON.stringify(fetched));
+        } catch {
+          // Ignore
+        }
+      },
+      (error) => {
+        if (!isPermissionError(error) && !isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.LIST, tplPath);
+        }
+      }
+    );
+    return () => unsub();
+  }, [authReady, user]);
+
+  // Firestore Room + Pages + LiveStroke Real-Time Synchronization (Zero PIN)
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified) {
+      setCloudState('local');
+      setCloudMessage('Mode lokal aktif. Masuk dengan Google untuk sinkronisasi real-time antar perangkat.');
+      setRoomOwnerId(null);
+      return;
+    }
+
+    let cancelled = false;
+    const unsubs: Unsubscribe[] = [];
+    const pageUnsubs = new Map<string, Unsubscribe>();
+    const pagesMap = new Map<string, FlipchartPage>();
+    let currentOrder: string[] = [];
+
+    const roomPath = `rooms/${roomId}`;
+    const roomDocRef = doc(db, 'rooms', roomId);
+
+    const flushPagesFromMap = () => {
+      if (cancelled) return;
+      if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+      const ordered: FlipchartPage[] = [];
+      for (const pid of currentOrder) {
+        const p = pagesMap.get(pid);
+        if (p) ordered.push(p);
+      }
+      if (ordered.length > 0) {
+        setPages(ordered);
+        saveToLocal(ordered, activePageIdRef.current);
+      }
+    };
+
+    const syncPageListeners = (orderIds: string[]) => {
+      currentOrder = orderIds;
+      const wanted = new Set(orderIds);
+
+      for (const [pid, unsub] of pageUnsubs.entries()) {
+        if (!wanted.has(pid)) {
+          unsub();
+          pageUnsubs.delete(pid);
+          pagesMap.delete(pid);
+        }
+      }
+
+      for (const pid of orderIds) {
+        if (pageUnsubs.has(pid)) continue;
+        const pagePath = `rooms/${roomId}/pages/${pid}`;
+        const pRef = doc(db, 'rooms', roomId, 'pages', pid);
+        const u = onSnapshot(
+          pRef,
+          (snap) => {
+            if (cancelled || !snap.exists()) return;
+            const d = snap.data();
+            const pageObj: FlipchartPage = {
+              pageId: String(d.pageId || pid),
+              name: String(d.name || 'Lembar'),
+              background: (d.background as PaperBackground) || 'white',
+              order: typeof d.order === 'number' ? d.order : 0,
+              elements: Array.isArray(d.elements) ? (d.elements as CanvasElement[]) : [],
+              updatedAtMs: Date.now(),
+            };
+            pagesMap.set(pid, pageObj);
+            flushPagesFromMap();
+          },
+          (error) => {
+            if (isQuotaError(error)) {
+              setCloudState('error');
+              setCloudMessage('Kuota harian Firestore tercapai. Beralih ke mode lokal.');
+            } else if (!isPermissionError(error)) {
+              handleFirestoreError(error, OperationType.GET, pagePath);
+            }
+          }
+        );
+        pageUnsubs.set(pid, u);
+      }
+      flushPagesFromMap();
+    };
+
+    const attachLiveStrokeListener = () => {
+      const livePath = `rooms/${roomId}/liveStroke/current`;
+      const liveRef = doc(db, 'rooms', roomId, 'liveStroke', 'current');
+      const u = onSnapshot(
+        liveRef,
+        (snap) => {
+          if (cancelled || !snap.exists()) {
+            setRemoteLiveElement(null);
+            return;
+          }
+          const d = snap.data();
+          if (d.updatedBy === user.uid && viewMode === 'tablet') {
+            return;
+          }
+          if (d.active && d.element && typeof d.element === 'object' && d.element.type) {
+            setRemoteLivePageId(String(d.pageId || ''));
+            setRemoteLiveElement(d.element as CanvasElement);
+          } else {
+            setRemoteLiveElement(null);
+          }
+        },
+        (error) => {
+          if (!isPermissionError(error) && !isQuotaError(error)) {
+            handleFirestoreError(error, OperationType.GET, livePath);
+          }
+        }
+      );
+      unsubs.push(u);
+    };
+
+    const bootstrapRoom = async () => {
+      setCloudState('connecting');
+      setCloudMessage('Menghubungkan ke Firestore real-time...');
+      try {
+        const snap = await getDoc(roomDocRef);
+        if (cancelled) return;
+
+        if (!snap.exists()) {
+          const batch = writeBatch(db);
+          const localPages = pagesRef.current.length > 0 ? pagesRef.current : [createInitialPage(0)];
+          const pageOrder = localPages.slice(0, MAX_PAGES).map((p) => p.pageId);
+          const firstActiveId = pageOrder.includes(activePageIdRef.current)
+            ? activePageIdRef.current
+            : pageOrder[0];
+
+          batch.set(roomDocRef, {
+            roomId,
+            ownerId: user.uid,
+            title: roomTitleRef.current.slice(0, 120) || 'Sesi Papan Tulis',
+            activePageId: firstActiveId,
+            pageOrder,
+            updatedBy: user.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          localPages.slice(0, MAX_PAGES).forEach((p, idx) => {
+            batch.set(doc(db, 'rooms', roomId, 'pages', p.pageId), {
+              pageId: p.pageId,
+              roomId,
+              ownerId: user.uid,
+              name: (p.name || `Lembar ${idx + 1}`).slice(0, 80),
+              background: p.background,
+              order: idx,
+              elements: sanitizeElementsForFirestore(p.elements),
+              updatedBy: user.uid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          });
+
+          await batch.commit();
+          if (cancelled) return;
+        }
+
+        const roomUnsub = onSnapshot(
+          roomDocRef,
+          async (roomSnap) => {
+            if (cancelled) return;
+            if (!roomSnap.exists()) {
+              setCloudState('room-not-found');
+              setCloudMessage('Ruang tidak ditemukan.');
+              return;
+            }
+            const rd = roomSnap.data();
+            const ownerUid = String(rd.ownerId || '');
+            const rTitle = String(rd.title || 'Sesi Papan Tulis');
+            const rActivePageId = String(rd.activePageId || '');
+            const rOrder = Array.isArray(rd.pageOrder) ? (rd.pageOrder as string[]) : [];
+
+            setRoomOwnerId(ownerUid);
+            setRoomTitle(rTitle);
+
+            // Auto-join verified collaborators seamlessly without PIN
+            if (ownerUid !== user.uid) {
+              try {
+                const edRef = doc(db, 'rooms', roomId, 'editors', user.uid);
+                const edSnap = await getDoc(edRef);
+                if (!edSnap.exists()) {
+                  await setDoc(edRef, {
+                    uid: user.uid,
+                    roomId,
+                    role: 'presenter',
+                    joinedAt: serverTimestamp(),
+                  });
+                }
+              } catch (err) {
+                console.error('Auto-join room editor failed:', err);
+              }
+            }
+
+            setCloudState('synced');
+            setCloudMessage('Tersinkronisasi real-time via Firestore');
+
+            if (rActivePageId && !(viewMode === 'tablet' && !isLiveBroadcastRef.current)) {
+              setActivePageId(rActivePageId);
+            }
+            syncPageListeners(rOrder);
+            if (unsubs.length === 1) {
+              attachLiveStrokeListener();
+            }
+          },
+          (error) => {
+            if (isQuotaError(error)) {
+              setCloudState('error');
+              setCloudMessage('Kuota harian Firestore tercapai. Beralih ke mode lokal.');
+            } else {
+              handleFirestoreError(error, OperationType.GET, roomPath);
+            }
+          }
+        );
+        unsubs.push(roomUnsub);
+      } catch (error) {
+        if (cancelled) return;
+        if (isQuotaError(error)) {
+          setCloudState('error');
+          setCloudMessage('Kuota harian Firestore tercapai. Papan tulis berjalan di mode lokal.');
+        } else {
+          setCloudState('error');
+          setCloudMessage('Gagal menyambung ke cloud. Beralih ke mode lokal.');
+          console.error('Room bootstrap error:', error);
+        }
+      }
+    };
+
+    void bootstrapRoom();
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+      pageUnsubs.forEach((u) => u());
+    };
+  }, [authReady, user, roomId, viewMode, saveToLocal]);
+
+  const activePage = useMemo(() => {
+    return pages.find((p) => p.pageId === activePageId) || pages[0];
+  }, [pages, activePageId]);
+
+  const canPushCloud = useCallback(() => {
+    if (!userRef.current || !userRef.current.emailVerified) return false;
+    if (cloudStateRef.current !== 'synced') return false;
+    if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return false;
+    return true;
+  }, [viewMode]);
+
+  // --- Cloud Write Helpers ---
+  const pushPageElementsToCloud = useCallback(
+    async (pageId: string, elements: CanvasElement[]) => {
+      if (!canPushCloud() || !userRef.current) return;
+      const pagePath = `rooms/${roomId}/pages/${pageId}`;
+      try {
+        await updateDoc(doc(db, 'rooms', roomId, 'pages', pageId), {
+          elements: sanitizeElementsForFirestore(elements),
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.UPDATE, pagePath);
+        }
+      }
+    },
+    [canPushCloud, roomId]
+  );
+
+  const pushPageMetaToCloud = useCallback(
+    async (page: FlipchartPage) => {
+      if (!canPushCloud() || !userRef.current) return;
+      const pagePath = `rooms/${roomId}/pages/${page.pageId}`;
+      try {
+        await updateDoc(doc(db, 'rooms', roomId, 'pages', page.pageId), {
+          name: page.name.slice(0, 80),
+          background: page.background,
+          order: page.order,
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.UPDATE, pagePath);
+        }
+      }
+    },
+    [canPushCloud, roomId]
+  );
+
+  const pushFullPageToCloud = useCallback(
+    async (page: FlipchartPage) => {
+      if (!canPushCloud() || !userRef.current) return;
+      const pagePath = `rooms/${roomId}/pages/${page.pageId}`;
+      try {
+        await updateDoc(doc(db, 'rooms', roomId, 'pages', page.pageId), {
+          name: page.name.slice(0, 80),
+          background: page.background,
+          order: page.order,
+          elements: sanitizeElementsForFirestore(page.elements),
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.UPDATE, pagePath);
+        }
+      }
+    },
+    [canPushCloud, roomId]
+  );
+
+  // Stream live stroke while drawing (throttled ~70ms for fluid real-time projector display)
+  const emitLiveStroke = useCallback(
+    (element: CanvasElement | null, force = false) => {
+      if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+      const now = Date.now();
+      if (!force && element !== null && now - lastLiveStrokePushRef.current < 70) {
+        return;
+      }
+      lastLiveStrokePushRef.current = now;
+
+      const pid = activePageIdRef.current;
+      channelRef.current?.postMessage({
+        senderId: clientInstanceId.current,
+        type: 'liveStroke',
+        roomId,
+        payload: { pageId: pid, element },
+      } satisfies BroadcastPacket);
+
+      if (canPushCloud() && userRef.current) {
+        const sanitized = element ? sanitizeElementsForFirestore([element])[0] : {};
+        setDoc(doc(db, 'rooms', roomId, 'liveStroke', 'current'), {
+          roomId,
+          pageId: pid,
+          active: Boolean(element),
+          element: sanitized,
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {
+          // Non-fatal for ephemeral live preview
+        });
+      }
+    },
+    [canPushCloud, roomId, viewMode]
+  );
+
+  // Commit elements change with per-page undo history
+  const updateActivePageElements = useCallback(
+    (updater: (prev: CanvasElement[]) => CanvasElement[], recordHistory = true) => {
+      const targetId = activePageIdRef.current;
+      const currentPages = pagesRef.current;
+      const currentPage = currentPages.find((p) => p.pageId === targetId);
+      if (!currentPage) return;
+
+      const prevElements = currentPage.elements;
+      const nextElements = updater(prevElements).slice(-MAX_ELEMENTS_PER_PAGE);
+
+      if (recordHistory) {
+        setUndoStacks((prev) => ({
+          ...prev,
+          [targetId]: [...(prev[targetId] || []).slice(-39), prevElements],
+        }));
+        setRedoStacks((prev) => ({
+          ...prev,
+          [targetId]: [],
+        }));
+      }
+
+      const nextPages = currentPages.map((p) =>
+        p.pageId === targetId ? { ...p, elements: nextElements, updatedAtMs: Date.now() } : p
+      );
+      setPages(nextPages);
+      const snapshot = saveToLocal(nextPages, targetId);
+      broadcastLocalState(snapshot);
+      void pushPageElementsToCloud(targetId, nextElements);
+    },
+    [broadcastLocalState, pushPageElementsToCloud, saveToLocal]
+  );
+
+  const addElement = useCallback(
+    (element: CanvasElement) => {
+      updateActivePageElements((prev) => {
+        if (prev.some((e) => e.id === element.id)) {
+          return prev.map((e) => (e.id === element.id ? element : e));
+        }
+        return [...prev, element];
+      }, true);
+    },
+    [updateActivePageElements]
+  );
+
+  const updateElement = useCallback(
+    (element: CanvasElement) => {
+      updateActivePageElements(
+        (prev) => prev.map((e) => (e.id === element.id ? element : e)),
+        true
+      );
+    },
+    [updateActivePageElements]
+  );
+
+  const removeElementById = useCallback(
+    (elementId: string) => {
+      updateActivePageElements((prev) => prev.filter((e) => e.id !== elementId), true);
+    },
+    [updateActivePageElements]
+  );
+
+  const clearActivePage = useCallback(() => {
+    updateActivePageElements(() => [], true);
+  }, [updateActivePageElements]);
+
+  // Undo & Redo per page
+  const canUndo = Boolean(activePage && (undoStacks[activePage.pageId]?.length || 0) > 0);
+  const canRedo = Boolean(activePage && (redoStacks[activePage.pageId]?.length || 0) > 0);
+
+  const undo = useCallback(() => {
+    const pid = activePageIdRef.current;
+    const stack = undoStacks[pid] || [];
+    if (stack.length === 0) return;
+
+    const currentPage = pagesRef.current.find((p) => p.pageId === pid);
+    if (!currentPage) return;
+
+    const previousElements = stack[stack.length - 1];
+    setUndoStacks((prev) => ({ ...prev, [pid]: stack.slice(0, -1) }));
+    setRedoStacks((prev) => ({
+      ...prev,
+      [pid]: [...(prev[pid] || []).slice(-39), currentPage.elements],
+    }));
+
+    const nextPages = pagesRef.current.map((p) =>
+      p.pageId === pid ? { ...p, elements: previousElements, updatedAtMs: Date.now() } : p
+    );
+    setPages(nextPages);
+    const snapshot = saveToLocal(nextPages, pid);
+    broadcastLocalState(snapshot);
+    void pushPageElementsToCloud(pid, previousElements);
+  }, [broadcastLocalState, pushPageElementsToCloud, saveToLocal, undoStacks]);
+
+  const redo = useCallback(() => {
+    const pid = activePageIdRef.current;
+    const stack = redoStacks[pid] || [];
+    if (stack.length === 0) return;
+
+    const currentPage = pagesRef.current.find((p) => p.pageId === pid);
+    if (!currentPage) return;
+
+    const nextElements = stack[stack.length - 1];
+    setRedoStacks((prev) => ({ ...prev, [pid]: stack.slice(0, -1) }));
+    setUndoStacks((prev) => ({
+      ...prev,
+      [pid]: [...(prev[pid] || []).slice(-39), currentPage.elements],
+    }));
+
+    const nextPages = pagesRef.current.map((p) =>
+      p.pageId === pid ? { ...p, elements: nextElements, updatedAtMs: Date.now() } : p
+    );
+    setPages(nextPages);
+    const snapshot = saveToLocal(nextPages, pid);
+    broadcastLocalState(snapshot);
+    void pushPageElementsToCloud(pid, nextElements);
+  }, [broadcastLocalState, pushPageElementsToCloud, redoStacks, saveToLocal]);
+
+  // Multi-page Flipchart operations
+  const selectPage = useCallback(
+    async (pageId: string) => {
+      if (!pagesRef.current.some((p) => p.pageId === pageId)) return;
+      setActivePageId(pageId);
+      setRemoteLiveElement(null);
+      const snapshot = saveToLocal(pagesRef.current, pageId);
+      broadcastLocalState(snapshot);
+
+      if (canPushCloud() && userRef.current) {
+        try {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            activePageId: pageId,
+            updatedBy: userRef.current.uid,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          if (!isQuotaError(error)) {
+            handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+          }
+        }
+      }
+    },
+    [broadcastLocalState, canPushCloud, roomId, saveToLocal]
+  );
+
+  const addPage = useCallback(async () => {
+    if (pagesRef.current.length >= MAX_PAGES) return;
+    const nextIdx = pagesRef.current.length;
+    const newPage = createInitialPage(nextIdx);
+    const nextPages = [...pagesRef.current, newPage];
+    const nextOrder = nextPages.map((p) => p.pageId);
+
+    setPages(nextPages);
+    setActivePageId(newPage.pageId);
+    const snapshot = saveToLocal(nextPages, newPage.pageId);
+    broadcastLocalState(snapshot);
+
+    if (canPushCloud() && userRef.current) {
+      try {
+        const batch = writeBatch(db);
+        const ownerId = roomOwnerIdRef.current || userRef.current.uid;
+        batch.set(doc(db, 'rooms', roomId, 'pages', newPage.pageId), {
+          pageId: newPage.pageId,
+          roomId,
+          ownerId,
+          name: newPage.name,
+          background: newPage.background,
+          order: newPage.order,
+          elements: [],
+          updatedBy: userRef.current.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        batch.update(doc(db, 'rooms', roomId), {
+          activePageId: newPage.pageId,
+          pageOrder: nextOrder,
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.WRITE, `rooms/${roomId}/pages/${newPage.pageId}`);
+        }
+      }
+    }
+  }, [broadcastLocalState, canPushCloud, roomId, saveToLocal]);
+
+  const renamePage = useCallback(
+    async (pageId: string, newName: string) => {
+      const cleaned = newName.trim().slice(0, 80);
+      if (!cleaned) return;
+      let updatedPage: FlipchartPage | null = null;
+      const nextPages = pagesRef.current.map((p) => {
+        if (p.pageId === pageId) {
+          updatedPage = { ...p, name: cleaned, updatedAtMs: Date.now() };
+          return updatedPage;
+        }
+        return p;
+      });
+      setPages(nextPages);
+      const snapshot = saveToLocal(nextPages, activePageIdRef.current);
+      broadcastLocalState(snapshot);
+      if (updatedPage) {
+        await pushPageMetaToCloud(updatedPage);
+      }
+    },
+    [broadcastLocalState, pushPageMetaToCloud, saveToLocal]
+  );
+
+  const deletePage = useCallback(
+    async (pageId: string) => {
+      if (pagesRef.current.length <= 1) return;
+      const filtered = pagesRef.current
+        .filter((p) => p.pageId !== pageId)
+        .map((p, i) => ({ ...p, order: i }));
+      const nextActiveId =
+        activePageIdRef.current === pageId ? filtered[0].pageId : activePageIdRef.current;
+
+      setPages(filtered);
+      setActivePageId(nextActiveId);
+      const snapshot = saveToLocal(filtered, nextActiveId);
+      broadcastLocalState(snapshot);
+
+      if (canPushCloud() && userRef.current) {
+        try {
+          const batch = writeBatch(db);
+          batch.delete(doc(db, 'rooms', roomId, 'pages', pageId));
+          batch.update(doc(db, 'rooms', roomId), {
+            activePageId: nextActiveId,
+            pageOrder: filtered.map((p) => p.pageId),
+            updatedBy: userRef.current.uid,
+            updatedAt: serverTimestamp(),
+          });
+          await batch.commit();
+        } catch (error) {
+          if (!isQuotaError(error)) {
+            handleFirestoreError(error, OperationType.DELETE, `rooms/${roomId}/pages/${pageId}`);
+          }
+        }
+      }
+    },
+    [broadcastLocalState, canPushCloud, roomId, saveToLocal]
+  );
+
+  const setActivePageBackground = useCallback(
+    async (background: PaperBackground) => {
+      const targetId = activePageIdRef.current;
+      let updatedPage: FlipchartPage | null = null;
+      const nextPages = pagesRef.current.map((p) => {
+        if (p.pageId === targetId) {
+          updatedPage = { ...p, background, updatedAtMs: Date.now() };
+          return updatedPage;
+        }
+        return p;
+      });
+      setPages(nextPages);
+      const snapshot = saveToLocal(nextPages, targetId);
+      broadcastLocalState(snapshot);
+      if (updatedPage) {
+        await pushPageMetaToCloud(updatedPage);
+      }
+    },
+    [broadcastLocalState, pushPageMetaToCloud, saveToLocal]
+  );
+
+  // Apply quick template to active page
+  const applyTemplateToActivePage = useCallback(
+    async (template: QuickTemplate, mode: 'replace' | 'append' = 'append') => {
+      const targetId = activePageIdRef.current;
+      const current = pagesRef.current.find((p) => p.pageId === targetId);
+      if (!current) return;
+
+      const templateElements: CanvasElement[] = [
+        ...(template.shapes || []).map((s) => ({ ...s, id: createId('shp') })),
+        ...template.blocks.slice(0, MAX_TEMPLATE_BLOCKS).map((b) => ({
+          id: createId('txt'),
+          type: 'text' as const,
+          x: b.x,
+          y: b.y,
+          text: b.text,
+          fontSize: b.fontSize,
+          color: b.color,
+          size: 4,
+          opacity: 1,
+        })),
+      ];
+
+      setUndoStacks((prev) => ({
+        ...prev,
+        [targetId]: [...(prev[targetId] || []).slice(-39), current.elements],
+      }));
+      setRedoStacks((prev) => ({ ...prev, [targetId]: [] }));
+
+      const nextElements =
+        mode === 'replace'
+          ? templateElements.slice(0, MAX_ELEMENTS_PER_PAGE)
+          : [...current.elements, ...templateElements].slice(-MAX_ELEMENTS_PER_PAGE);
+
+      const updatedPage: FlipchartPage = {
+        ...current,
+        background: template.background,
+        elements: nextElements,
+        updatedAtMs: Date.now(),
+      };
+
+      const nextPages = pagesRef.current.map((p) => (p.pageId === targetId ? updatedPage : p));
+      setPages(nextPages);
+      const snapshot = saveToLocal(nextPages, targetId);
+      broadcastLocalState(snapshot);
+      await pushFullPageToCloud(updatedPage);
+    },
+    [broadcastLocalState, pushFullPageToCloud, saveToLocal]
+  );
+
+  // Save current page text blocks as reusable custom template
+  const saveActivePageAsTemplate = useCallback(
+    async (title: string, category: string) => {
+      const current = pagesRef.current.find((p) => p.pageId === activePageIdRef.current);
+      if (!current) return;
+
+      const blocks = current.elements
+        .filter((el): el is Extract<CanvasElement, { type: 'text' }> => el.type === 'text')
+        .slice(0, MAX_TEMPLATE_BLOCKS)
+        .map((t) => ({
+          x: Math.round(t.x),
+          y: Math.round(t.y),
+          text: t.text.slice(0, 300),
+          fontSize: Math.round(t.fontSize),
+          color: t.color,
+        }));
+
+      const newTpl: QuickTemplate = {
+        templateId: createId('tpl'),
+        title: title.trim().slice(0, 80) || current.name,
+        category: category.trim().slice(0, 40) || 'Kustom',
+        background: current.background,
+        blocks,
+      };
+
+      const nextLocal = [newTpl, ...customTemplates];
+      setCustomTemplates(nextLocal);
+      try {
+        localStorage.setItem(LOCAL_TEMPLATES_KEY, JSON.stringify(nextLocal));
+      } catch {
+        // Ignore
+      }
+
+      if (userRef.current && userRef.current.emailVerified) {
+        const tplPath = `users/${userRef.current.uid}/templates/${newTpl.templateId}`;
+        try {
+          await setDoc(doc(db, 'users', userRef.current.uid, 'templates', newTpl.templateId), {
+            templateId: newTpl.templateId,
+            userId: userRef.current.uid,
+            title: newTpl.title,
+            category: newTpl.category,
+            background: newTpl.background,
+            blocks: newTpl.blocks,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          if (!isQuotaError(error)) {
+            handleFirestoreError(error, OperationType.CREATE, tplPath);
+          }
+        }
+      }
+    },
+    [customTemplates]
+  );
+
+  const deleteCustomTemplate = useCallback(
+    async (templateId: string) => {
+      const nextLocal = customTemplates.filter((t) => t.templateId !== templateId);
+      setCustomTemplates(nextLocal);
+      try {
+        localStorage.setItem(LOCAL_TEMPLATES_KEY, JSON.stringify(nextLocal));
+      } catch {
+        // Ignore
+      }
+      if (userRef.current && userRef.current.emailVerified) {
+        try {
+          await deleteDoc(doc(db, 'users', userRef.current.uid, 'templates', templateId));
+        } catch {
+          // Ignore if local-only
+        }
+      }
+    },
+    [customTemplates]
+  );
+
+  // Publish local Tablet draft immediately to Projector
+  const publishDraftNow = useCallback(async () => {
+    const targetId = activePageIdRef.current;
+    const current = pagesRef.current.find((p) => p.pageId === targetId);
+    if (!current) return;
+
+    const snapshot = saveToLocal(pagesRef.current, targetId);
+    channelRef.current?.postMessage({
+      senderId: clientInstanceId.current,
+      type: 'state',
+      roomId,
+      payload: snapshot,
+    } satisfies BroadcastPacket);
+
+    if (userRef.current && userRef.current.emailVerified && cloudStateRef.current === 'synced') {
+      try {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'rooms', roomId, 'pages', current.pageId), {
+          name: current.name.slice(0, 80),
+          background: current.background,
+          order: current.order,
+          elements: sanitizeElementsForFirestore(current.elements),
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+        batch.update(doc(db, 'rooms', roomId), {
+          activePageId: current.pageId,
+          updatedBy: userRef.current.uid,
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+        }
+      }
+    }
+  }, [roomId, saveToLocal]);
+
+  const toggleLiveBroadcast = useCallback(
+    async (nextLive: boolean) => {
+      setIsLiveBroadcast(nextLive);
+      isLiveBroadcastRef.current = nextLive;
+      if (nextLive) {
+        await publishDraftNow();
+      }
+    },
+    [publishDraftNow]
+  );
+
+  const switchRoom = useCallback((nextRawRoomId: string) => {
+    const cleaned = sanitizeId(nextRawRoomId, 32).toUpperCase();
+    if (cleaned.length < 4) return;
+    const loaded = loadLocalRoom(cleaned);
+    setRoomId(cleaned);
+    setRoomTitle(loaded.title);
+    setPages(loaded.pages);
+    setActivePageId(loaded.activePageId);
+    setUndoStacks({});
+    setRedoStacks({});
+    setRemoteLiveElement(null);
+  }, []);
+
+  const createNewRoom = useCallback(() => {
+    switchRoom(generateRoomCode());
+  }, [switchRoom]);
+
+  const updateRoomTitle = useCallback(
+    async (nextTitle: string) => {
+      const cleaned = nextTitle.trim().slice(0, 120);
+      if (!cleaned) return;
+      setRoomTitle(cleaned);
+      const snapshot = saveToLocal(pagesRef.current, activePageIdRef.current, { title: cleaned });
+      broadcastLocalState(snapshot);
+
+      if (
+        userRef.current &&
+        userRef.current.emailVerified &&
+        cloudStateRef.current === 'synced' &&
+        roomOwnerIdRef.current === userRef.current.uid
+      ) {
+        try {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            title: cleaned,
+            updatedBy: userRef.current.uid,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // Non-fatal
+        }
+      }
+    },
+    [broadcastLocalState, roomId, saveToLocal]
+  );
+
+  const handleGoogleSignIn = useCallback(async () => {
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      console.error('Sign in failed:', error);
+    }
+  }, []);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    try {
+      await signOutGoogle();
+    } catch (error) {
+      console.error('Sign out failed:', error);
+    }
+  }, []);
+
+  const allTemplates = useMemo(
+    () => [...customTemplates, ...BUILTIN_TEMPLATES],
+    [customTemplates]
+  );
+
+  return {
+    viewMode,
+    setViewMode,
+    roomId,
+    roomTitle,
+    updateRoomTitle,
+    switchRoom,
+    createNewRoom,
+    pages,
+    activePage,
+    activePageId,
+    selectPage,
+    addPage,
+    renamePage,
+    deletePage,
+    setActivePageBackground,
+    addElement,
+    updateElement,
+    removeElementById,
+    clearActivePage,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    emitLiveStroke,
+    remoteLiveElement: remoteLivePageId === activePage?.pageId ? remoteLiveElement : null,
+    isLiveBroadcast,
+    toggleLiveBroadcast,
+    publishDraftNow,
+    laptopCanEdit,
+    setLaptopCanEdit,
+    user,
+    authReady,
+    cloudState,
+    cloudMessage,
+    handleGoogleSignIn,
+    handleGoogleSignOut,
+    allTemplates,
+    applyTemplateToActivePage,
+    saveActivePageAsTemplate,
+    deleteCustomTemplate,
+  };
+}

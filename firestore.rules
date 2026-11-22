@@ -1,0 +1,318 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRoomId(id) {
+      return id is string && id.size() >= 4 && id.size() <= 32 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPageId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidBackground(bg) {
+      return bg is string && bg in ['white', 'grid', 'lined', 'chalkboard'];
+    }
+
+    // --- Relational Master Gate Helpers ---
+    function roomDoc(roomId) {
+      return get(/databases/$(database)/documents/rooms/$(roomId));
+    }
+
+    function isRoomOwner(roomId) {
+      return exists(/databases/$(database)/documents/rooms/$(roomId))
+        && roomDoc(roomId).data.ownerId == request.auth.uid;
+    }
+
+    function isActiveRoomEditor(roomId) {
+      return exists(/databases/$(database)/documents/rooms/$(roomId))
+        && exists(/databases/$(database)/documents/rooms/$(roomId)/editors/$(request.auth.uid));
+    }
+
+    function isAuthorizedRoomMember(roomId) {
+      return isRoomOwner(roomId) || isActiveRoomEditor(roomId);
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap) ---
+    function isValidRoom(data, roomId) {
+      return data.keys().hasAll([
+          'roomId', 'ownerId', 'title', 'activePageId', 'pageOrder',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'ownerId', 'title', 'activePageId', 'pageOrder',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidRoomId(data.roomId) && data.roomId == roomId
+        && isValidId(data.ownerId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && isValidPageId(data.activePageId)
+        && data.pageOrder is list && data.pageOrder.size() >= 1 && data.pageOrder.size() <= 50
+        && isValidPageId(data.pageOrder[0])
+        && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidRoomEditor(data, roomId, editorUid) {
+      return data.keys().hasAll(['uid', 'roomId', 'role', 'joinedAt'])
+        && data.keys().hasOnly(['uid', 'roomId', 'role', 'joinedAt'])
+        && isValidId(data.uid) && data.uid == editorUid && data.uid == request.auth.uid
+        && isValidRoomId(data.roomId) && data.roomId == roomId
+        && data.role is string && data.role in ['owner', 'presenter']
+        && data.joinedAt is timestamp;
+    }
+
+    function isValidFlipchartPage(data, roomId, pageId) {
+      return data.keys().hasAll([
+          'pageId', 'roomId', 'ownerId', 'name', 'background',
+          'order', 'elements', 'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'pageId', 'roomId', 'ownerId', 'name', 'background',
+          'order', 'elements', 'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidPageId(data.pageId) && data.pageId == pageId
+        && isValidRoomId(data.roomId) && data.roomId == roomId
+        && isValidId(data.ownerId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && isValidBackground(data.background)
+        && data.order is int && data.order >= 0 && data.order <= 500
+        && data.elements is list && data.elements.size() <= 400
+        && (data.elements.size() == 0 || data.elements[0] is map)
+        && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidLiveStroke(data, roomId) {
+      return data.keys().hasAll([
+          'roomId', 'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
+        ])
+        && isValidRoomId(data.roomId) && data.roomId == roomId
+        && isValidPageId(data.pageId)
+        && data.active is bool
+        && data.element is map
+        && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidNoteTemplate(data, userId, templateId) {
+      return data.keys().hasAll([
+          'templateId', 'userId', 'title', 'category', 'background',
+          'blocks', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'templateId', 'userId', 'title', 'category', 'background',
+          'blocks', 'createdAt', 'updatedAt'
+        ])
+        && isValidPageId(data.templateId) && data.templateId == templateId
+        && isValidId(data.userId) && data.userId == userId && data.userId == request.auth.uid
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 80
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 40
+        && isValidBackground(data.background)
+        && data.blocks is list && data.blocks.size() <= 20
+        && (data.blocks.size() == 0 || data.blocks[0] is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    // --- Collection: /rooms/{roomId} ---
+    match /rooms/{roomId} {
+      allow get: if isVerifiedUser() && isValidRoomId(roomId);
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidRoomId(roomId)
+        && isValidRoom(incoming(), roomId)
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidRoomId(roomId)
+        && isValidRoom(incoming(), roomId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().roomId == existing().roomId
+        && incoming().createdAt == existing().createdAt
+        && (
+          // Tier 1 (Owner): Update title or pages
+          (
+            existing().ownerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'activePageId', 'pageOrder', 'updatedBy', 'updatedAt'
+            ])
+          )
+          ||
+          // Tier 2 (Joined Presenter): Switch active page or manage page order
+          (
+            isActiveRoomEditor(roomId)
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'activePageId', 'pageOrder', 'updatedBy', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidRoomId(roomId)
+        && existing().ownerId == request.auth.uid;
+
+      // --- Subcollection: /rooms/{roomId}/editors/{editorUid} ---
+      match /editors/{editorUid} {
+        allow get: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidId(editorUid)
+          && (request.auth.uid == editorUid || isRoomOwner(roomId));
+        allow list: if isVerifiedUser() && existing().uid == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidId(editorUid)
+          && isValidRoomEditor(incoming(), roomId, editorUid)
+          && incoming().joinedAt == request.time
+          && exists(/databases/$(database)/documents/rooms/$(roomId))
+          && (
+            (isRoomOwner(roomId) && incoming().role == 'owner')
+            || incoming().role == 'presenter'
+          );
+
+        allow update: if false;
+
+        allow delete: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidId(editorUid)
+          && (request.auth.uid == editorUid || isRoomOwner(roomId));
+      }
+
+      // --- Subcollection: /rooms/{roomId}/pages/{pageId} ---
+      match /pages/{pageId} {
+        allow get: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidPageId(pageId)
+          && isAuthorizedRoomMember(roomId);
+        allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidPageId(pageId)
+          && isValidFlipchartPage(incoming(), roomId, pageId)
+          && incoming().createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/rooms/$(roomId))
+          && incoming().ownerId == getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId
+          && (
+            getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid
+            || isActiveRoomEditor(roomId)
+          );
+
+        allow update: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidPageId(pageId)
+          && isValidFlipchartPage(incoming(), roomId, pageId)
+          && incoming().pageId == existing().pageId
+          && incoming().roomId == existing().roomId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && isAuthorizedRoomMember(roomId)
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['elements', 'updatedBy', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'updatedBy', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'elements', 'updatedBy', 'updatedAt'])
+          );
+
+        allow delete: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && isValidPageId(pageId)
+          && isAuthorizedRoomMember(roomId);
+      }
+
+      // --- Subcollection: /rooms/{roomId}/liveStroke/{slotId} ---
+      match /liveStroke/{slotId} {
+        allow get: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && slotId == 'current'
+          && isAuthorizedRoomMember(roomId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && slotId == 'current'
+          && isValidLiveStroke(incoming(), roomId)
+          && isAuthorizedRoomMember(roomId);
+
+        allow update: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && slotId == 'current'
+          && isValidLiveStroke(incoming(), roomId)
+          && incoming().roomId == existing().roomId
+          && isAuthorizedRoomMember(roomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
+          ]);
+
+        allow delete: if isVerifiedUser()
+          && isValidRoomId(roomId)
+          && slotId == 'current'
+          && isAuthorizedRoomMember(roomId);
+      }
+    }
+
+    // --- Collection: /users/{userId}/templates/{templateId} ---
+    match /users/{userId}/templates/{templateId} {
+      allow get: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidPageId(templateId)
+        && request.auth.uid == userId;
+      allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidPageId(templateId)
+        && isValidNoteTemplate(incoming(), userId, templateId)
+        && incoming().createdAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidPageId(templateId)
+        && isValidNoteTemplate(incoming(), userId, templateId)
+        && incoming().templateId == existing().templateId
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'category', 'background', 'blocks', 'updatedAt'
+        ]);
+
+      allow delete: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidPageId(templateId)
+        && request.auth.uid == userId;
+    }
+  }
+}
