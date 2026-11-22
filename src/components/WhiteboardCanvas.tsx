@@ -80,22 +80,46 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   } | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
 
-  // Keep canvas pixel resolution sharp and strictly 16:9
+  // Keep canvas pixel resolution sharp and strictly 16:9 across resizes & device auto-rotations
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
+    let settleTimer: number | null = null;
+
     const updateSize = () => {
       const rect = container.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        setDisplaySize({ width: rect.width, height: rect.height });
+        setDisplaySize((prev) =>
+          Math.abs(prev.width - rect.width) < 0.5 && Math.abs(prev.height - rect.height) < 0.5
+            ? prev
+            : { width: rect.width, height: rect.height }
+        );
       }
+    };
+
+    const handleOrientationShift = () => {
+      updateSize();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      // Mobile browsers (especially iOS Safari) finalize viewport rect ~120ms after rotation
+      settleTimer = window.setTimeout(updateSize, 150);
     };
 
     updateSize();
     const ro = new ResizeObserver(updateSize);
     ro.observe(container);
-    return () => ro.disconnect();
+    window.addEventListener('resize', updateSize, { passive: true });
+    window.addEventListener('orientationchange', handleOrientationShift, { passive: true });
+    const screenOrientation = window.screen?.orientation;
+    screenOrientation?.addEventListener?.('change', handleOrientationShift);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', updateSize);
+      window.removeEventListener('orientationchange', handleOrientationShift);
+      screenOrientation?.removeEventListener?.('change', handleOrientationShift);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+    };
   }, []);
 
   // Re-render canvas whenever visual state changes

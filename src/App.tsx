@@ -13,6 +13,7 @@ import {
   MonitorUp,
   QrCode,
   Radio,
+  RotateCw,
   Send,
   Smartphone,
 } from 'lucide-react';
@@ -37,11 +38,54 @@ export default function App() {
   const [isConnectOpen, setIsConnectOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isLandscapeLocked, setIsLandscapeLocked] = useState(false);
   const [chromeCollapsed, setChromeCollapsed] = useState(false);
   const [extendControlsVisible, setExtendControlsVisible] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 720,
+  }));
 
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const isLandscape = viewport.width > viewport.height;
+  const isShortLandscape = isLandscape && viewport.height <= 560;
+
+  // Track device auto-rotation & viewport changes reliably across Android & iOS
+  useEffect(() => {
+    let settleTimer: number | null = null;
+    const syncViewport = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    const handleRotate = () => {
+      syncViewport();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(syncViewport, 160);
+    };
+
+    window.addEventListener('resize', syncViewport, { passive: true });
+    window.addEventListener('orientationchange', handleRotate, { passive: true });
+    const screenOrientation = window.screen?.orientation;
+    screenOrientation?.addEventListener?.('change', handleRotate);
+    return () => {
+      window.removeEventListener('resize', syncViewport);
+      window.removeEventListener('orientationchange', handleRotate);
+      screenOrientation?.removeEventListener?.('change', handleRotate);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+    };
+  }, []);
+
+  const unlockOrientationSafe = useCallback(() => {
+    try {
+      const ori = window.screen?.orientation as
+        | (ScreenOrientation & { unlock?: () => void })
+        | undefined;
+      ori?.unlock?.();
+    } catch {
+      // Ignore unsupported browsers (e.g. iOS Safari)
+    }
+    setIsLandscapeLocked(false);
+  }, []);
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -49,28 +93,77 @@ export default function App() {
         const el = rootRef.current || document.documentElement;
         await el.requestFullscreen();
       } else {
+        unlockOrientationSafe();
         await document.exitFullscreen();
       }
     } catch {
-      // Fallback visual fullscreen toggle when blocked by iframe permissions
+      // Fallback visual fullscreen toggle when blocked by iframe or iOS Safari
       setIsFullscreen((prev) => !prev);
       setChromeCollapsed((prev) => !prev);
     }
-  }, []);
+  }, [unlockOrientationSafe]);
+
+  // 1-tap Rotate to Landscape + Fullscreen for Phone/Tablet Remote mode
+  const toggleLandscapeMode = useCallback(async () => {
+    const ori = window.screen?.orientation as
+      | (ScreenOrientation & {
+          lock?: (orientation: string) => Promise<void>;
+          unlock?: () => void;
+        })
+      | undefined;
+
+    if (isLandscapeLocked || document.fullscreenElement) {
+      unlockOrientationSafe();
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+      } catch {
+        // Ignore
+      }
+      setIsFullscreen(false);
+      return;
+    }
+
+    let locked = false;
+    try {
+      const el = rootRef.current || document.documentElement;
+      if (el.requestFullscreen && !document.fullscreenElement) {
+        await el.requestFullscreen();
+      }
+      if (ori?.lock) {
+        await ori.lock('landscape');
+        locked = true;
+        setIsLandscapeLocked(true);
+      }
+    } catch {
+      // iOS Safari or desktop browsers without orientation.lock support
+    }
+
+    if (!locked) {
+      if (window.innerWidth <= window.innerHeight) {
+        setExportNotice('Putar HP/Tablet ke posisi mendatar (Landscape) — pastikan Auto-Rotate aktif');
+        setTimeout(() => setExportNotice(null), 3200);
+      } else {
+        setChromeCollapsed((prev) => !prev);
+      }
+    }
+  }, [isLandscapeLocked, unlockOrientationSafe]);
 
   useEffect(() => {
     const onFsChange = () => {
       const active = Boolean(document.fullscreenElement);
       setIsFullscreen(active);
-      if (active && wb.viewMode !== 'tablet') {
-        setChromeCollapsed(true);
-      } else if (!active) {
+      if (!active) {
+        unlockOrientationSafe();
         setChromeCollapsed(false);
+      } else if (wb.viewMode !== 'tablet') {
+        setChromeCollapsed(true);
       }
     };
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, [wb.viewMode]);
+  }, [wb.viewMode, unlockOrientationSafe]);
 
   // Global keyboard shortcuts (F = Fullscreen, Ctrl+Z = Undo, Ctrl+Y = Redo)
   useEffect(() => {
@@ -131,23 +224,31 @@ export default function App() {
       <div
         ref={rootRef}
         onClick={() => setExtendControlsVisible((v) => !v)}
-        className="h-[100dvh] w-screen bg-slate-950 flex items-center justify-center p-2 sm:p-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] relative overflow-hidden group"
+        className="h-[100dvh] w-screen bg-slate-950 flex items-center justify-center p-2 sm:p-4 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.5rem,env(safe-area-inset-bottom))] relative overflow-hidden group"
       >
-        <div className="w-full max-w-[176vh]">
-          <WhiteboardCanvas
-            background={wb.activePage?.background || 'white'}
-            elements={wb.activePage?.elements || []}
-            remoteLiveElement={wb.remoteLiveElement}
-            activeTool="pen"
-            color={color}
-            strokeSize={strokeSize}
-            fontSize={fontSize}
-            readOnly={true}
-            onAddElement={() => {}}
-            onUpdateElement={() => {}}
-            onRemoveElement={() => {}}
-            onEmitLiveStroke={() => {}}
-          />
+        <div className="w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
+          <div
+            className="flex items-center justify-center"
+            style={{
+              width: 'min(100cqw, calc(100cqh * 16 / 9))',
+              height: 'min(100cqh, calc(100cqw * 9 / 16))',
+            }}
+          >
+            <WhiteboardCanvas
+              background={wb.activePage?.background || 'white'}
+              elements={wb.activePage?.elements || []}
+              remoteLiveElement={wb.remoteLiveElement}
+              activeTool="pen"
+              color={color}
+              strokeSize={strokeSize}
+              fontSize={fontSize}
+              readOnly={true}
+              onAddElement={() => {}}
+              onUpdateElement={() => {}}
+              onRemoveElement={() => {}}
+              onEmitLiveStroke={() => {}}
+            />
+          </div>
         </div>
 
         {/* Accessible on both desktop hover AND touch tap */}
@@ -199,9 +300,13 @@ export default function App() {
         isFullscreen ? 'bg-slate-950' : 'bg-slate-100'
       }`}
     >
-      {/* TOP BAR (Adapts cleanly between Laptop Projector and Tablet/HP Remote) */}
+      {/* TOP BAR (Adapts cleanly between Laptop Projector, Portrait Phone & Landscape Phone) */}
       {!chromeCollapsed && (
-        <header className="shrink-0 bg-white border-b border-slate-200 px-3 sm:px-5 py-2 flex items-center justify-between gap-3 z-20">
+        <header
+          className={`shrink-0 bg-white border-b border-slate-200 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:px-5 ${
+            isShortLandscape ? 'py-1' : 'py-2'
+          } flex items-center justify-between gap-2 sm:gap-3 z-20`}
+        >
           {/* Brand & Room Context */}
           <div className="flex items-center gap-3 min-w-0">
             <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
@@ -354,17 +459,50 @@ export default function App() {
               <>
                 <button
                   type="button"
+                  onClick={() => void toggleLandscapeMode()}
+                  title={
+                    isLandscapeLocked || isFullscreen
+                      ? 'Keluar Mode Landscape / Layar Penuh'
+                      : 'Putar ke Landscape / Layar Penuh'
+                  }
+                  aria-label="Putar ke Landscape"
+                  className={`min-w-[44px] min-h-[44px] px-2.5 rounded-xl border inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                    isLandscapeLocked || isFullscreen
+                      ? 'border-teal-600 bg-teal-50 text-teal-800'
+                      : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {isLandscapeLocked || isFullscreen ? (
+                    <Minimize2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <RotateCw className="w-4 h-4 shrink-0" />
+                  )}
+                  <span className="hidden md:inline">
+                    {isLandscapeLocked || isFullscreen ? 'Normal' : 'Landscape'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChromeCollapsed(true)}
+                  title="Sembunyikan toolbar agar kanvas tulis maksimal"
+                  aria-label="Fokus Kanvas"
+                  className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
+                >
+                  <Maximize2 className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
                   onClick={handleExportPDF}
                   title="Unduh semua lembar ke PDF"
                   aria-label="Unduh PDF"
-                  className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-50"
+                  className="hidden sm:flex min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
                 >
                   <FileText className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsConnectOpen(true)}
-                  className="min-h-[44px] min-w-[44px] px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-slate-800 whitespace-nowrap"
+                  className="min-h-[44px] min-w-[44px] px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-slate-800 whitespace-nowrap shrink-0"
                 >
                   <Cloud className="w-4 h-4 shrink-0" />
                   <span className="hidden sm:inline">Koneksi</span>
@@ -385,15 +523,19 @@ export default function App() {
         </header>
       )}
 
-      {/* MAIN STAGE: Precision 16:9 Canvas (Zero scroll, always aligned between Tablet & Projector) */}
+      {/* MAIN STAGE: Precision 16:9 Canvas (Exact auto-fit in Portrait, Landscape & Desktop) */}
       <main
         className={`flex-1 min-h-0 w-full flex flex-col items-center justify-center ${
-          chromeCollapsed ? 'p-2 sm:p-3' : 'px-2.5 py-2 sm:px-5 sm:py-3'
+          chromeCollapsed
+            ? 'p-1.5 sm:p-3 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
+            : isShortLandscape
+            ? 'px-2 py-1 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
+            : 'px-2.5 py-2 sm:px-5 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))]'
         } relative`}
       >
         {/* Subtle informational bar on mobile Laptop view or Mirror mode */}
         {!chromeCollapsed && isCanvasReadOnly && (
-          <div className="mb-2 w-full max-w-[1280px] flex items-center justify-between text-xs text-slate-600 px-1">
+          <div className="mb-1.5 w-full max-w-[1280px] flex items-center justify-between text-xs text-slate-600 px-1">
             <span className="inline-flex items-center gap-1.5 font-medium">
               <Monitor className="w-3.5 h-3.5 text-teal-600" />
               Mode Mirror Aktif — Layar menerima coretan live dari Tablet/HP secara otomatis.
@@ -408,18 +550,13 @@ export default function App() {
           </div>
         )}
 
-        {/* Responsive 16:9 Canvas Wrapper that never overflows vertically OR horizontally */}
-        <div className="w-full h-full min-h-0 flex items-center justify-center">
+        {/* Mathematically exact 16:9 Container-Query Stage (never overflows or shrinks unnecessarily on rotation) */}
+        <div className="flex-1 w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
           <div
-            className="w-full max-h-full flex items-center justify-center"
+            className="flex items-center justify-center"
             style={{
-              maxWidth: chromeCollapsed
-                ? 'min(100%, calc((100dvh - 24px) * 16 / 9))'
-                : isTabletMode
-                ? 'min(100%, calc((100dvh - 200px) * 16 / 9))'
-                : isCanvasReadOnly
-                ? 'min(100%, calc((100dvh - 160px) * 16 / 9))'
-                : 'min(100%, calc((100dvh - 215px) * 16 / 9))',
+              width: 'min(100cqw, calc(100cqh * 16 / 9))',
+              height: 'min(100cqh, calc(100cqw * 9 / 16))',
             }}
           >
             <WhiteboardCanvas
@@ -439,9 +576,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* Fullscreen Collapse / Expand Floating Trigger */}
-        {isFullscreen && (
-          <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 flex items-center gap-2">
+        {/* Fullscreen / Collapsed Chrome Floating Trigger (Works on Android, iOS Safari & Desktop) */}
+        {(isFullscreen || chromeCollapsed) && (
+          <div className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-right))] z-40 flex items-center gap-2">
             <button
               type="button"
               onClick={() => setChromeCollapsed((c) => !c)}
@@ -459,22 +596,22 @@ export default function App() {
                 </>
               )}
             </button>
-            {chromeCollapsed && (
+            {isFullscreen && chromeCollapsed && (
               <button
                 type="button"
                 onClick={toggleFullscreen}
                 className="min-h-[44px] px-3 rounded-xl bg-slate-900/95 hover:bg-slate-800 text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 shadow-lg border border-slate-700 sm:backdrop-blur-sm"
               >
                 <Minimize2 className="w-4 h-4" />
-                Keluar (F)
+                Keluar
               </button>
             )}
           </div>
         )}
 
-        {/* Export / Draft Confirmation Toast */}
+        {/* Export / Draft / Rotation Confirmation Toast */}
         {exportNotice && (
-          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg">
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] text-center bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg">
             {exportNotice}
           </div>
         )}
@@ -482,7 +619,13 @@ export default function App() {
 
       {/* BOTTOM DOCK: Ergonomic Drawing Toolbar + Flipchart Page Tabs */}
       {!chromeCollapsed && (
-        <footer className="shrink-0 w-full max-w-[1380px] mx-auto px-2.5 sm:px-5 pb-[max(0.625rem,env(safe-area-inset-bottom))] space-y-2 z-20">
+        <footer
+          className={`shrink-0 w-full max-w-[1380px] mx-auto pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] sm:px-5 ${
+            isShortLandscape
+              ? 'pb-[max(0.375rem,env(safe-area-inset-bottom))] space-y-1'
+              : 'pb-[max(0.625rem,env(safe-area-inset-bottom))] space-y-2'
+          } z-20`}
+        >
           {!isCanvasReadOnly && (
             <DrawingToolbar
               activeTool={activeTool}
