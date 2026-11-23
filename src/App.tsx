@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
-  Cloud,
   Download,
   Edit3,
   Eye,
@@ -24,15 +23,17 @@ import {
 import { ConnectModal } from './components/ConnectModal';
 import { DrawingToolbar } from './components/DrawingToolbar';
 import { FlipchartBar } from './components/FlipchartBar';
-import { OfflineIndicator, PWAInstallButton } from './components/PWAWidgets';
+import { OfflineIndicator, PWAInstallModal } from './components/PWAWidgets';
 import { TemplateDrawer } from './components/TemplateDrawer';
 import { WhiteboardCanvas } from './components/WhiteboardCanvas';
+import { usePWAInstall } from './hooks/usePWAInstall';
 import { useWhiteboardSync } from './hooks/useWhiteboardSync';
 import { exportAllPagesAsPDF, exportPageAsPNG } from './lib/exportUtils';
 import { FontSizeKey, STICKY_COLORS, StrokeSizeKey, ToolType } from './types/whiteboard';
 
 export default function App() {
   const wb = useWhiteboardSync();
+  const pwa = usePWAInstall();
 
   const [activeTool, setActiveTool] = useState<ToolType>('pen');
   const [color, setColor] = useState<string>('#0F294A');
@@ -42,10 +43,15 @@ export default function App() {
 
   const [isConnectOpen, setIsConnectOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isLandscapeLocked, setIsLandscapeLocked] = useState(false);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
   const [chromeCollapsed, setChromeCollapsed] = useState(false);
   const [extendControlsVisible, setExtendControlsVisible] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
@@ -55,8 +61,37 @@ export default function App() {
   }));
 
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const isLandscape = viewport.width > viewport.height;
   const isShortLandscape = isLandscape && viewport.height <= 560;
+
+  // Close unified Connect/Install dropdown on outside click or Escape
+  useEffect(() => {
+    if (!isActionMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(e.target as Node)) {
+        setIsActionMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsActionMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isActionMenuOpen]);
+
+  const handleInstallAppClick = async () => {
+    setIsActionMenuOpen(false);
+    if (pwa.isInstallable) {
+      const accepted = await pwa.install();
+      if (accepted) return;
+    }
+    setIsInstallModalOpen(true);
+  };
 
   // Track device auto-rotation & viewport changes reliably across Android & iOS
   useEffect(() => {
@@ -322,14 +357,14 @@ export default function App() {
           } flex items-center justify-between gap-2 sm:gap-3 z-20`}
         >
           {/* Brand & Room Context */}
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2.5 min-w-0">
             <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
               FlipCast
             </span>
             <span className="hidden sm:inline text-slate-300" aria-hidden="true">
               /
             </span>
-            <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-600 min-w-0">
+            <div className="flex items-center gap-1.5 text-xs text-slate-600 min-w-0">
               <button
                 type="button"
                 onClick={() => setIsConnectOpen(true)}
@@ -350,11 +385,11 @@ export default function App() {
                 <span className="font-mono font-semibold text-slate-800 whitespace-nowrap">
                   {wb.roomId}
                 </span>
-                <span aria-hidden="true" className="hidden sm:inline text-slate-300">
+                <span aria-hidden="true" className="hidden lg:inline text-slate-300">
                   ·
                 </span>
                 <span
-                  className={`hidden sm:inline truncate max-w-[180px] font-medium ${
+                  className={`hidden lg:inline truncate max-w-[145px] font-medium ${
                     wb.p2pState === 'connected'
                       ? 'text-emerald-700'
                       : wb.cloudState === 'synced' || wb.p2pState === 'ready'
@@ -367,7 +402,7 @@ export default function App() {
                   {wb.p2pState === 'connected'
                     ? isTabletMode
                       ? 'Terhubung ke PC'
-                      : `Terhubung (${wb.p2pPeerCount} Remote)`
+                      : `Terhubung (${wb.p2pPeerCount})`
                     : wb.cloudState === 'synced'
                     ? 'Cloud Real-Time'
                     : wb.p2pState === 'ready'
@@ -378,7 +413,7 @@ export default function App() {
                 </span>
               </button>
               {!isTabletMode && (wb.isRemoteTransmitting || wb.p2pState === 'connected') && (
-                <span className="hidden lg:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md whitespace-nowrap">
+                <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md whitespace-nowrap">
                   <Radio className="w-3 h-3 animate-pulse" />
                   Remote Aktif
                 </span>
@@ -394,7 +429,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void wb.toggleLiveBroadcast(true)}
-                  className={`min-h-[40px] px-2.5 sm:px-3 rounded-lg inline-flex items-center gap-1.5 text-xs font-bold transition-colors whitespace-nowrap ${
+                  className={`min-h-[38px] px-2.5 sm:px-3 rounded-lg inline-flex items-center gap-1.5 text-xs font-bold transition-colors whitespace-nowrap ${
                     wb.isLiveBroadcast
                       ? 'bg-teal-600 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -406,7 +441,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void wb.toggleLiveBroadcast(false)}
-                  className={`min-h-[40px] px-2.5 sm:px-3 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[38px] px-2.5 sm:px-3 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                     !wb.isLiveBroadcast
                       ? 'bg-amber-500 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -423,7 +458,7 @@ export default function App() {
                     await wb.publishDraftNow();
                     showToast('Coretan draft dikirim ke layar Proyektor');
                   }}
-                  className="min-h-[44px] px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:bg-slate-800 whitespace-nowrap"
+                  className="min-h-[42px] px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold inline-flex items-center gap-1.5 hover:bg-slate-800 whitespace-nowrap"
                 >
                   <Send className="w-3.5 h-3.5 shrink-0" />
                   <span className="hidden sm:inline">Kirim ke Proyektor</span>
@@ -431,14 +466,14 @@ export default function App() {
               )}
             </div>
           ) : (
-            /* LAPTOP / PROJECTOR: Mirror vs Edit Switch + Exports + Fullscreen */
-            <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar">
+            /* LAPTOP / PROJECTOR: Mirror vs Edit Switch + Exports + Extend + Fullscreen */
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
               {/* Laptop Mirror vs Direct Edit segmented switch */}
               <div className="hidden md:flex items-center bg-slate-100 p-1 rounded-xl shrink-0">
                 <button
                   type="button"
                   onClick={() => wb.setLaptopCanEdit(false)}
-                  className={`min-h-[36px] px-2.5 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[34px] px-2.5 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                     !wb.laptopCanEdit
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -451,7 +486,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => wb.setLaptopCanEdit(true)}
-                  className={`min-h-[36px] px-2.5 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[34px] px-2.5 rounded-lg inline-flex items-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                     wb.laptopCanEdit
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -468,20 +503,21 @@ export default function App() {
                 type="button"
                 onClick={handleExportPNG}
                 title="Unduh halaman aktif sebagai gambar PNG resolusi tinggi"
-                className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[42px] min-w-[42px] px-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 <Download className="w-4 h-4 shrink-0" />
-                <span className="hidden lg:inline">PNG</span>
+                <span className="hidden xl:inline">PNG</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleExportPDF}
                 title="Unduh seluruh lembar flipchart menjadi 1 file PDF landscape"
-                className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[42px] min-w-[42px] px-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 <FileText className="w-4 h-4 text-teal-700 shrink-0" />
-                <span className="hidden sm:inline">Ekspor PDF</span>
+                <span className="hidden xl:inline">Ekspor PDF</span>
+                <span className="hidden sm:inline xl:hidden">PDF</span>
               </button>
 
               <a
@@ -489,33 +525,64 @@ export default function App() {
                 target="_blank"
                 rel="noopener noreferrer"
                 title="Buka Jendela Extend (Monitor ke-2 / Proyektor Bersih tanpa toolbar)"
-                className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 rounded-xl border border-teal-200 bg-teal-50/70 hover:bg-teal-100/80 text-teal-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[42px] min-w-[42px] px-2.5 rounded-xl border border-teal-200 bg-teal-50/70 hover:bg-teal-100/80 text-teal-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 <MonitorUp className="w-4 h-4 shrink-0" />
-                <span className="hidden lg:inline">Extend Layar ke-2</span>
+                <span className="hidden 2xl:inline">Extend Layar ke-2</span>
+                <span className="hidden lg:inline 2xl:hidden">Extend</span>
               </a>
 
               <button
                 type="button"
                 onClick={toggleFullscreen}
                 title="Fullscreen Proyektor (Shortcut: F)"
-                className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[42px] min-w-[42px] px-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 {isFullscreen ? (
                   <Minimize2 className="w-4 h-4 shrink-0" />
                 ) : (
                   <Maximize2 className="w-4 h-4 shrink-0" />
                 )}
-                <span className="hidden xl:inline">Proyektor (F)</span>
+                <span className="hidden 2xl:inline">Proyektor (F)</span>
               </button>
             </div>
           )}
 
-          {/* Right Primary Action Zone */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <PWAInstallButton compact={isTabletMode} />
+          {/* Right Action Zone: Icon-only Undo/Redo + Unified Dynamic Connect/Install Dropdown + Collapse Header */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Compact Icon-Only Undo / Redo Group (Always visible in Header when editing) */}
+            {!isCanvasReadOnly && (
+              <div
+                role="group"
+                aria-label="Riwayat Coretan Undo dan Redo"
+                className="inline-flex items-center bg-slate-50 border border-slate-200 rounded-xl p-0.5 shrink-0"
+              >
+                <button
+                  type="button"
+                  onClick={wb.undo}
+                  disabled={!wb.canUndo}
+                  title="Urungkan (Ctrl+Z)"
+                  aria-label="Undo"
+                  className="w-[38px] h-[38px] rounded-lg inline-flex items-center justify-center text-slate-700 hover:bg-white hover:text-slate-900 hover:shadow-xs active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <Undo2 className="w-4 h-4" />
+                </button>
+                <span className="w-px h-4 bg-slate-200/90" aria-hidden="true" />
+                <button
+                  type="button"
+                  onClick={wb.redo}
+                  disabled={!wb.canRedo}
+                  title="Ulangi (Ctrl+Y / Ctrl+Shift+Z)"
+                  aria-label="Redo"
+                  className="w-[38px] h-[38px] rounded-lg inline-flex items-center justify-center text-slate-700 hover:bg-white hover:text-slate-900 hover:shadow-xs active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <Redo2 className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
-            {isTabletMode ? (
+            {/* Tablet-specific quick controls */}
+            {isTabletMode && (
               <>
                 <button
                   type="button"
@@ -526,7 +593,7 @@ export default function App() {
                       : 'Putar ke Landscape / Layar Penuh'
                   }
                   aria-label="Putar ke Landscape"
-                  className={`min-w-[44px] min-h-[44px] px-2.5 rounded-xl border inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  className={`min-w-[42px] min-h-[42px] px-2 rounded-xl border inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                     isLandscapeLocked || isFullscreen
                       ? 'border-teal-600 bg-teal-50 text-teal-800'
                       : 'border-slate-200 text-slate-700 hover:bg-slate-50'
@@ -537,7 +604,7 @@ export default function App() {
                   ) : (
                     <RotateCw className="w-4 h-4 shrink-0" />
                   )}
-                  <span className="hidden md:inline">
+                  <span className="hidden lg:inline">
                     {isLandscapeLocked || isFullscreen ? 'Normal' : 'Landscape'}
                   </span>
                 </button>
@@ -546,7 +613,7 @@ export default function App() {
                   onClick={() => setChromeCollapsed(true)}
                   title="Sembunyikan toolbar agar kanvas tulis maksimal"
                   aria-label="Fokus Kanvas"
-                  className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
+                  className="min-w-[42px] min-h-[42px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
                 >
                   <Maximize2 className="w-4 h-4" />
                 </button>
@@ -555,38 +622,120 @@ export default function App() {
                   onClick={handleExportPDF}
                   title="Unduh semua lembar ke PDF"
                   aria-label="Unduh PDF"
-                  className="hidden sm:flex min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
+                  className="hidden sm:flex min-w-[42px] min-h-[42px] rounded-xl border border-slate-200 items-center justify-center text-slate-700 hover:bg-slate-50 shrink-0"
                 >
                   <FileText className="w-4 h-4" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setIsConnectOpen(true)}
-                  className="min-h-[44px] min-w-[44px] px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-slate-800 whitespace-nowrap shrink-0"
-                >
-                  <Cloud className="w-4 h-4 shrink-0" />
-                  <span className="hidden sm:inline">Koneksi</span>
-                </button>
               </>
-            ) : (
+            )}
+
+            {/* Unified Dynamic Action Button: Hubungkan Tablet/HP (QR) + Pasang Aplikasi */}
+            <div ref={actionMenuRef} className="relative shrink-0">
               <button
                 type="button"
-                onClick={() => setIsConnectOpen(true)}
-                className="min-h-[44px] px-3 sm:px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold inline-flex items-center gap-2 shadow-xs transition-colors whitespace-nowrap shrink-0"
+                onClick={() => {
+                  if (pwa.isInstalled) {
+                    setIsConnectOpen(true);
+                  } else {
+                    setIsActionMenuOpen((prev) => !prev);
+                  }
+                }}
+                aria-haspopup={!pwa.isInstalled ? 'menu' : undefined}
+                aria-expanded={!pwa.isInstalled ? isActionMenuOpen : undefined}
+                title={
+                  pwa.isInstalled
+                    ? 'Hubungkan Tablet / HP (QR & Kode Ruang)'
+                    : 'Hubungkan Tablet / HP (QR) atau Pasang Aplikasi'
+                }
+                className={`min-h-[42px] px-3 sm:px-3.5 rounded-xl text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
+                  isTabletMode
+                    ? 'bg-slate-900 hover:bg-slate-800'
+                    : 'bg-teal-600 hover:bg-teal-700'
+                }`}
               >
                 <QrCode className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Hubungkan Tablet / HP (QR)</span>
-                <span className="sm:hidden">QR</span>
+                <span className="hidden sm:inline">
+                  {isTabletMode ? 'Koneksi' : 'Hubungkan'}
+                </span>
+                {!pwa.isInstalled && (
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 opacity-90 transition-transform duration-150 ${
+                      isActionMenuOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                )}
               </button>
-            )}
+
+              {/* Dynamic Dropdown Menu (Shown when app is not yet installed as standalone PWA) */}
+              {!pwa.isInstalled && isActionMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Menu Koneksi dan Pasang Aplikasi"
+                  className="absolute right-0 top-full mt-2 w-[280px] rounded-2xl bg-white border border-slate-200/90 shadow-xl p-1.5 z-50"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsActionMenuOpen(false);
+                      setIsConnectOpen(true);
+                    }}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-xl text-left hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 border border-teal-100 flex items-center justify-center shrink-0">
+                      <QrCode className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-900 leading-tight">
+                        Hubungkan Tablet / HP (QR)
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                        {wb.p2pState === 'connected'
+                          ? isTabletMode
+                            ? `Terhubung ke PC (${wb.roomId})`
+                            : `${wb.p2pPeerCount} Remote aktif · ${wb.roomId}`
+                          : `Scan QR / kode ruang ${wb.roomId}`}
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="h-px bg-slate-100 my-1 mx-2" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleInstallAppClick()}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-xl text-left hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0">
+                      <Download className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-900 leading-tight flex items-center gap-1.5">
+                        <span>Pasang Aplikasi</span>
+                        <Smartphone className="w-3 h-3 text-slate-400 shrink-0" />
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                        {pwa.isInstallable
+                          ? 'Instal langsung di perangkat ini'
+                          : 'Buka cepat layar penuh & mode offline'}
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Independent Collapse Header Trigger */}
             <button
               type="button"
-              onClick={() => setHeaderCollapsed(true)}
+              onClick={() => {
+                setIsActionMenuOpen(false);
+                setHeaderCollapsed(true);
+              }}
               title="Ciutkan menu header agar papan tulis lebih bersih"
               aria-label="Ciutkan Header"
-              className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors shrink-0"
+              className="min-w-[42px] min-h-[42px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors shrink-0"
             >
               <PanelTopClose className="w-4 h-4" />
             </button>
@@ -594,15 +743,15 @@ export default function App() {
         </header>
       )}
 
-      {/* Floating Expand Header Handle when Header is Collapsed */}
+      {/* Floating Expand Header Handle + Icon-Only Undo/Redo when Header is Collapsed */}
       {!chromeCollapsed && headerCollapsed && (
-        <div className="fixed top-[max(0.5rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-30">
+        <div className="fixed top-[max(0.5rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-1 bg-white/95 sm:backdrop-blur-md border border-slate-200/90 shadow-md rounded-full p-1">
           <button
             type="button"
             onClick={() => setHeaderCollapsed(false)}
             title="Tampilkan menu header atas"
             aria-label="Tampilkan Header"
-            className="min-h-[38px] px-3.5 py-1.5 rounded-full bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-md text-xs font-semibold text-slate-700 inline-flex items-center gap-2 transition-all active:scale-95"
+            className="min-h-[34px] px-3 py-1 rounded-full hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-all active:scale-95"
           >
             <PanelTopOpen className="w-4 h-4 text-teal-600 shrink-0" />
             <span className="font-display font-bold text-slate-900">FlipCast</span>
@@ -610,17 +759,43 @@ export default function App() {
               {wb.roomId}
             </span>
           </button>
+
+          {!isCanvasReadOnly && (
+            <>
+              <span className="w-px h-4 bg-slate-200" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={wb.undo}
+                disabled={!wb.canUndo}
+                title="Urungkan (Ctrl+Z)"
+                aria-label="Undo"
+                className="w-[34px] h-[34px] rounded-full inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+              >
+                <Undo2 className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={wb.redo}
+                disabled={!wb.canRedo}
+                title="Ulangi (Ctrl+Y)"
+                aria-label="Redo"
+                className="w-[34px] h-[34px] rounded-full inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+              >
+                <Redo2 className="w-4 h-4" />
+              </button>
+            </>
+          )}
         </div>
       )}
 
-      {/* MAIN WORKSPACE: Collapsible Left Mini-Sidebar + Precision 16:9 Canvas Stage */}
+      {/* MAIN WORKSPACE: Left Drawing Mini-Sidebar + Full-Height 16:9 Canvas Stage + Right Flipchart Mini-Sidebar */}
       <main
         className={`flex-1 min-h-0 w-full flex flex-row items-stretch gap-2 sm:gap-3 ${
           chromeCollapsed
-            ? 'p-1.5 sm:p-3 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
+            ? 'p-1.5 sm:p-3 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.5rem,env(safe-area-inset-bottom))]'
             : isShortLandscape
-            ? 'px-2 py-1 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
-            : 'px-2.5 py-2 sm:px-4 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))]'
+            ? 'px-2 py-1 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.375rem,env(safe-area-inset-bottom))]'
+            : 'px-2.5 py-2 sm:px-4 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] pb-[max(0.625rem,env(safe-area-inset-bottom))]'
         } relative`}
       >
         {/* Left Collapsible Mini-Sidebar for Drawing Tools */}
@@ -646,7 +821,7 @@ export default function App() {
           />
         )}
 
-        {/* Right Stage Column: Optional Mirror Bar + Precision 16:9 Canvas + Persistent Undo/Redo */}
+        {/* Center Stage Column: Optional Mirror Bar + Precision 16:9 Canvas */}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col items-center justify-center relative">
           {/* Subtle informational bar on Mirror mode */}
           {!chromeCollapsed && isCanvasReadOnly && (
@@ -665,7 +840,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Mathematically exact 16:9 Container-Query Stage (auto-expands when header or sidebar collapses!) */}
+          {/* Mathematically exact 16:9 Container-Query Stage (auto-expands when header or sidebars collapse!) */}
           <div className="flex-1 w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
             <div
               className="flex items-center justify-center"
@@ -691,44 +866,53 @@ export default function App() {
               />
             </div>
           </div>
-
-          {/* Always-Visible Persistent Floating Undo / Redo Dock (Stays visible even when header/sidebar collapse) */}
-          {!isCanvasReadOnly && (
-            <div
-              role="group"
-              aria-label="Riwayat Coretan Undo dan Redo"
-              className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 z-30 inline-flex items-center bg-white/95 sm:backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-md p-1 gap-0.5"
-            >
-              <button
-                type="button"
-                onClick={wb.undo}
-                disabled={!wb.canUndo}
-                title="Urungkan coretan terakhir (Ctrl+Z)"
-                aria-label="Undo"
-                className="min-w-[42px] sm:min-w-[44px] min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
-              >
-                <Undo2 className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Undo</span>
-              </button>
-              <span className="w-px h-5 bg-slate-200" aria-hidden="true" />
-              <button
-                type="button"
-                onClick={wb.redo}
-                disabled={!wb.canRedo}
-                title="Ulangi coretan (Ctrl+Y / Ctrl+Shift+Z)"
-                aria-label="Redo"
-                className="min-w-[42px] sm:min-w-[44px] min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
-              >
-                <Redo2 className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Redo</span>
-              </button>
-            </div>
-          )}
         </div>
 
-        {/* Fullscreen / Collapsed Chrome Floating Trigger (Works on Android, iOS Safari & Desktop) */}
+        {/* Right Collapsible Mini-Sidebar for Flipchart Pages & Mode Switcher */}
+        {!chromeCollapsed && (
+          <FlipchartBar
+            pages={wb.pages}
+            activePageId={wb.activePageId}
+            readOnly={isCanvasReadOnly}
+            collapsed={rightSidebarCollapsed}
+            onToggleCollapse={() => setRightSidebarCollapsed((v) => !v)}
+            isTabletMode={isTabletMode}
+            onToggleViewMode={() => wb.setViewMode(isTabletMode ? 'projector' : 'tablet')}
+            onSelectPage={(id) => void wb.selectPage(id)}
+            onAddPage={() => void wb.addPage()}
+            onRenamePage={(id, name) => void wb.renamePage(id, name)}
+            onDeletePage={(id) => void wb.deletePage(id)}
+          />
+        )}
+
+        {/* Fullscreen / Collapsed Chrome Floating Controls (Includes Icon-Only Undo/Redo when editing) */}
         {(isFullscreen || chromeCollapsed) && (
           <div className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-right))] z-40 flex items-center gap-2">
+            {chromeCollapsed && !isCanvasReadOnly && (
+              <div className="inline-flex items-center bg-slate-900/95 border border-slate-700 rounded-xl p-0.5 shadow-lg sm:backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={wb.undo}
+                  disabled={!wb.canUndo}
+                  title="Urungkan (Ctrl+Z)"
+                  aria-label="Undo"
+                  className="w-[40px] h-[40px] rounded-lg inline-flex items-center justify-center text-white hover:bg-slate-800 disabled:opacity-35 transition-colors"
+                >
+                  <Undo2 className="w-4 h-4" />
+                </button>
+                <span className="w-px h-4 bg-slate-700" aria-hidden="true" />
+                <button
+                  type="button"
+                  onClick={wb.redo}
+                  disabled={!wb.canRedo}
+                  title="Ulangi (Ctrl+Y)"
+                  aria-label="Redo"
+                  className="w-[40px] h-[40px] rounded-lg inline-flex items-center justify-center text-white hover:bg-slate-800 disabled:opacity-35 transition-colors"
+                >
+                  <Redo2 className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => setChromeCollapsed((c) => !c)}
@@ -767,51 +951,6 @@ export default function App() {
         )}
       </main>
 
-      {/* SLIM BOTTOM DOCK: Flipchart Page Tabs Only (Drawing Toolbar is now in the Left Mini-Sidebar) */}
-      {!chromeCollapsed && (
-        <footer
-          className={`shrink-0 w-full max-w-[1440px] mx-auto pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] sm:px-4 ${
-            isShortLandscape
-              ? 'pb-[max(0.375rem,env(safe-area-inset-bottom))]'
-              : 'pb-[max(0.625rem,env(safe-area-inset-bottom))]'
-          } z-20`}
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
-              <FlipchartBar
-                pages={wb.pages}
-                activePageId={wb.activePageId}
-                readOnly={isCanvasReadOnly}
-                onSelectPage={(id) => void wb.selectPage(id)}
-                onAddPage={() => void wb.addPage()}
-                onRenamePage={(id, name) => void wb.renamePage(id, name)}
-                onDeletePage={(id) => void wb.deletePage(id)}
-              />
-            </div>
-
-            {/* Quick Mode Switcher on Projector/Tablet footer */}
-            <button
-              type="button"
-              onClick={() => wb.setViewMode(isTabletMode ? 'projector' : 'tablet')}
-              title={isTabletMode ? 'Beralih ke Mode Proyektor Laptop' : 'Beralih ke Mode Remote Tablet'}
-              className="hidden sm:inline-flex min-h-[50px] px-3.5 rounded-2xl bg-white border border-slate-200/90 shadow-sm text-xs font-semibold text-slate-700 hover:bg-slate-50 items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              {isTabletMode ? (
-                <>
-                  <Monitor className="w-4 h-4 text-slate-600" />
-                  Mode Proyektor
-                </>
-              ) : (
-                <>
-                  <Smartphone className="w-4 h-4 text-teal-600" />
-                  Mode Tablet
-                </>
-              )}
-            </button>
-          </div>
-        </footer>
-      )}
-
       {/* Modals & Overlays */}
       <ConnectModal
         isOpen={isConnectOpen}
@@ -840,6 +979,15 @@ export default function App() {
               : `Ruang aktif: ${code}`
           )
         }
+      />
+
+      <PWAInstallModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        isInstallable={pwa.isInstallable}
+        platform={pwa.platform}
+        isInIframe={pwa.isInIframe}
+        onInstall={pwa.install}
       />
 
       <TemplateDrawer
