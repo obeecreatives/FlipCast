@@ -22,6 +22,7 @@ import {
   isQuotaError,
   OperationType,
   sanitizeElementsForFirestore,
+  signInAnonymousSession,
   signInWithGoogle,
   signInWithGoogleRedirect,
   signOutGoogle,
@@ -44,6 +45,19 @@ import {
 const LOCAL_STORAGE_PREFIX = 'flipcast_room_v1_';
 const LOCAL_TEMPLATES_KEY = 'flipcast_custom_templates_v1';
 const LAST_ROOM_KEY = 'flipcast_last_room_id';
+const BOARD_DEVICE_ID_KEY = 'flipcast_board_device_id';
+
+function getOrCreateBoardDeviceId(): string {
+  try {
+    const existing = sanitizeId(sessionStorage.getItem(BOARD_DEVICE_ID_KEY) || '', 48);
+    if (existing.length >= 6) return existing;
+    const generated = createId('dev').slice(0, 48);
+    sessionStorage.setItem(BOARD_DEVICE_ID_KEY, generated);
+    return generated;
+  } catch {
+    return createId('dev').slice(0, 48);
+  }
+}
 
 interface PersistedRoomLocal {
   roomId: string;
@@ -160,7 +174,7 @@ function parseUrlParams(): { viewMode: ViewMode; roomId: string } {
     viewMode = 'tablet';
   } else if (rawView === 'extend') {
     viewMode = 'extend';
-  } else if (rawView === 'projector' || rawView === 'main') {
+  } else if (rawView === 'projector' || rawView === 'main' || rawView === 'slides') {
     viewMode = 'projector';
   } else {
     // Auto-detect: Phone / Tablet opens directly as Remote; Laptop / PC opens as Main Projector
@@ -195,7 +209,8 @@ function parseUrlParams(): { viewMode: ViewMode; roomId: string } {
 
 export function useWhiteboardSync() {
   const initial = useMemo(() => parseUrlParams(), []);
-  const clientInstanceId = useRef(createId('cli'));
+  const boardDeviceIdRef = useRef<string>(getOrCreateBoardDeviceId());
+  const clientInstanceId = boardDeviceIdRef;
 
   const [viewMode, setViewMode] = useState<ViewMode>(initial.viewMode);
   const [roomId, setRoomId] = useState<string>(initial.roomId);
@@ -212,21 +227,24 @@ export function useWhiteboardSync() {
   // Laptop Mirror vs Direct Edit toggle
   const [laptopCanEdit, setLaptopCanEdit] = useState<boolean>(true);
 
-  // Remote live in-progress stroke preview
+  // Remote live in-progress stroke preview & active signal from another boardDeviceId
   const [remoteLiveElement, setRemoteLiveElement] = useState<CanvasElement | null>(null);
   const [remoteLivePageId, setRemoteLivePageId] = useState<string | null>(null);
+  const [isRemoteTransmitting, setIsRemoteTransmitting] = useState<boolean>(false);
+  const remoteSignalTimerRef = useRef<number | null>(null);
 
   // Per-page Undo & Redo history stacks
   const [undoStacks, setUndoStacks] = useState<Record<string, CanvasElement[][]>>({});
   const [redoStacks, setRedoStacks] = useState<Record<string, CanvasElement[][]>>({});
 
-  // Firebase Auth & Cloud sync state
+  // Firebase Auth & Cloud sync state (Zero-email automatic Anonymous Auth + optional Google)
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [anonymousProviderDisabled, setAnonymousProviderDisabled] = useState<boolean>(false);
   const [syncNonce, setSyncNonce] = useState<number>(0);
-  const [cloudState, setCloudState] = useState<CloudSyncState>('local');
-  const [cloudMessage, setCloudMessage] = useState<string>('');
+  const [cloudState, setCloudState] = useState<CloudSyncState>('connecting');
+  const [cloudMessage, setCloudMessage] = useState<string>('Menyiapkan koneksi cloud otomatis...');
   const [roomOwnerId, setRoomOwnerId] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<QuickTemplate[]>(() =>
     loadCustomTemplatesLocal()
@@ -248,13 +266,33 @@ export function useWhiteboardSync() {
   const roomTitleRef = useRef(roomTitle);
   roomTitleRef.current = roomTitle;
 
+  const anonAttemptedRef = useRef<boolean>(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const lastLiveStrokePushRef = useRef<number>(0);
 
-  // Sync URL query params cleanly without full page reload
+  const pulseRemoteSignal = useCallback(() => {
+    setIsRemoteTransmitting(true);
+    if (remoteSignalTimerRef.current !== null) {
+      window.clearTimeout(remoteSignalTimerRef.current);
+    }
+    remoteSignalTimerRef.current = window.setTimeout(() => {
+      setIsRemoteTransmitting(false);
+    }, 8000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (remoteSignalTimerRef.current !== null) {
+        window.clearTimeout(remoteSignalTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Sync URL query params cleanly without full page reload (strip anti-cache &v after load)
   useEffect(() => {
     const url = new URL(window.location.href);
     url.searchParams.set('room', roomId);
+    url.searchParams.delete('v');
     if (viewMode === 'projector' && !isTouchMobileOrTabletDevice()) {
       url.searchParams.delete('view');
     } else {
@@ -273,9 +311,52 @@ export function useWhiteboardSync() {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setAuthReady(true);
+      if (u) {
+        setAnonymousProviderDisabled(false);
+        setAuthError(null);
+      }
     });
     return () => unsub();
   }, []);
+
+  // Automatically create an invisible anonymous Firebase session (no email/login required)
+  const ensureAnonymousSession = useCallback(async () => {
+    if (auth.currentUser) return true;
+    setCloudState('connecting');
+    setCloudMessage('Menyambungkan sesi cloud otomatis tanpa login...');
+    try {
+      await signInAnonymousSession();
+      setAnonymousProviderDisabled(false);
+      setAuthError(null);
+      return true;
+    } catch (error: unknown) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : '';
+      if (
+        code === 'auth/admin-restricted-operation' ||
+        code === 'auth/operation-not-allowed'
+      ) {
+        setAnonymousProviderDisabled(true);
+        setCloudState('local');
+        setCloudMessage(
+          'Mode Anonim belum diaktifkan di Firebase Console. Aktifkan Anonymous di Authentication → Sign-in method (1 klik) agar langsung konek tanpa email.'
+        );
+      } else {
+        setCloudState('local');
+        setCloudMessage('Belum tersambung ke cloud. Periksa koneksi internet lalu coba sambung ulang.');
+      }
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || user) return;
+    if (anonAttemptedRef.current) return;
+    anonAttemptedRef.current = true;
+    void ensureAnonymousSession();
+  }, [authReady, user, ensureAnonymousSession]);
 
   // Persist local room state
   const saveToLocal = useCallback(
@@ -344,9 +425,9 @@ export function useWhiteboardSync() {
     [roomId, viewMode]
   );
 
-  // Load user's private custom templates from Firestore when signed in
+  // Load user's private custom templates from Firestore when authenticated (anonymous or Google)
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified) return;
+    if (!authReady || !user) return;
 
     const tplPath = `users/${user.uid}/templates`;
     const q = query(collection(db, tplPath), where('userId', '==', user.uid));
@@ -379,11 +460,15 @@ export function useWhiteboardSync() {
     return () => unsub();
   }, [authReady, user]);
 
-  // Firestore Room + Pages + LiveStroke Real-Time Synchronization (Zero PIN)
+  // Firestore Room + Pages + LiveStroke Real-Time Synchronization (Zero Email, Zero PIN)
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified) {
-      setCloudState('local');
-      setCloudMessage('Mode lokal aktif. Masuk dengan Google untuk sinkronisasi real-time antar perangkat.');
+    if (!authReady) {
+      setCloudState('connecting');
+      setCloudMessage('Menyiapkan koneksi cloud otomatis...');
+      return;
+    }
+
+    if (!user) {
       setRoomOwnerId(null);
       return;
     }
@@ -393,9 +478,23 @@ export function useWhiteboardSync() {
     const pageUnsubs = new Map<string, Unsubscribe>();
     const pagesMap = new Map<string, FlipchartPage>();
     let currentOrder: string[] = [];
+    const myDeviceId = boardDeviceIdRef.current;
 
     const roomPath = `rooms/${roomId}`;
     const roomDocRef = doc(db, 'rooms', roomId);
+
+    const ensureEditorMembership = async () => {
+      const edRef = doc(db, 'rooms', roomId, 'editors', user.uid);
+      const edSnap = await getDoc(edRef);
+      if (!edSnap.exists()) {
+        await setDoc(edRef, {
+          uid: user.uid,
+          roomId,
+          role: 'presenter',
+          joinedAt: serverTimestamp(),
+        });
+      }
+    };
 
     const flushPagesFromMap = () => {
       if (cancelled) return;
@@ -432,6 +531,10 @@ export function useWhiteboardSync() {
           (snap) => {
             if (cancelled || !snap.exists()) return;
             const d = snap.data();
+            const incomingDeviceId = typeof d.sourceDeviceId === 'string' ? d.sourceDeviceId : '';
+            if (incomingDeviceId && incomingDeviceId !== myDeviceId) {
+              pulseRemoteSignal();
+            }
             const pageObj: FlipchartPage = {
               pageId: String(d.pageId || pid),
               name: String(d.name || 'Lembar'),
@@ -468,10 +571,17 @@ export function useWhiteboardSync() {
             return;
           }
           const d = snap.data();
-          if (d.updatedBy === user.uid && viewMode === 'tablet') {
+          const incomingDeviceId = typeof d.sourceDeviceId === 'string' ? d.sourceDeviceId : '';
+
+          // Unique boardDeviceId echo guard: sender never overwrites its own active canvas
+          if (incomingDeviceId) {
+            if (incomingDeviceId === myDeviceId) return;
+          } else if (d.updatedBy === user.uid && viewMode === 'tablet') {
             return;
           }
+
           if (d.active && d.element && typeof d.element === 'object' && d.element.type) {
+            pulseRemoteSignal();
             setRemoteLivePageId(String(d.pageId || ''));
             setRemoteLiveElement(d.element as CanvasElement);
           } else {
@@ -508,6 +618,7 @@ export function useWhiteboardSync() {
             title: roomTitleRef.current.slice(0, 120) || 'Sesi Papan Tulis',
             activePageId: firstActiveId,
             pageOrder,
+            sourceDeviceId: myDeviceId,
             updatedBy: user.uid,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -522,6 +633,7 @@ export function useWhiteboardSync() {
               background: p.background,
               order: idx,
               elements: sanitizeElementsForFirestore(p.elements),
+              sourceDeviceId: myDeviceId,
               updatedBy: user.uid,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
@@ -530,6 +642,13 @@ export function useWhiteboardSync() {
 
           await batch.commit();
           if (cancelled) return;
+        } else {
+          // Ensure presenter membership exists BEFORE attaching subcollection listeners (zero race condition)
+          const existingOwnerId = String(snap.data().ownerId || '');
+          if (existingOwnerId && existingOwnerId !== user.uid) {
+            await ensureEditorMembership();
+            if (cancelled) return;
+          }
         }
 
         const roomUnsub = onSnapshot(
@@ -546,30 +665,29 @@ export function useWhiteboardSync() {
             const rTitle = String(rd.title || 'Sesi Papan Tulis');
             const rActivePageId = String(rd.activePageId || '');
             const rOrder = Array.isArray(rd.pageOrder) ? (rd.pageOrder as string[]) : [];
+            const incomingDeviceId = typeof rd.sourceDeviceId === 'string' ? rd.sourceDeviceId : '';
+
+            if (incomingDeviceId && incomingDeviceId !== myDeviceId) {
+              pulseRemoteSignal();
+            }
 
             setRoomOwnerId(ownerUid);
             setRoomTitle(rTitle);
 
-            // Auto-join verified collaborators seamlessly without PIN
-            if (ownerUid !== user.uid) {
+            if (ownerUid && ownerUid !== user.uid) {
               try {
-                const edRef = doc(db, 'rooms', roomId, 'editors', user.uid);
-                const edSnap = await getDoc(edRef);
-                if (!edSnap.exists()) {
-                  await setDoc(edRef, {
-                    uid: user.uid,
-                    roomId,
-                    role: 'presenter',
-                    joinedAt: serverTimestamp(),
-                  });
-                }
+                await ensureEditorMembership();
               } catch (err) {
                 console.error('Auto-join room editor failed:', err);
               }
             }
 
             setCloudState('synced');
-            setCloudMessage('Tersinkronisasi real-time via Firestore');
+            setCloudMessage(
+              user.isAnonymous
+                ? 'Terhubung otomatis real-time tanpa login email'
+                : 'Tersinkronisasi real-time via Firestore'
+            );
 
             if (rActivePageId && !(viewMode === 'tablet' && !isLiveBroadcastRef.current)) {
               setActivePageId(rActivePageId);
@@ -609,14 +727,14 @@ export function useWhiteboardSync() {
       unsubs.forEach((u) => u());
       pageUnsubs.forEach((u) => u());
     };
-  }, [authReady, user, roomId, viewMode, saveToLocal, syncNonce]);
+  }, [authReady, user, roomId, viewMode, saveToLocal, syncNonce, pulseRemoteSignal]);
 
   const activePage = useMemo(() => {
     return pages.find((p) => p.pageId === activePageId) || pages[0];
   }, [pages, activePageId]);
 
   const canPushCloud = useCallback(() => {
-    if (!userRef.current || !userRef.current.emailVerified) return false;
+    if (!userRef.current) return false;
     if (cloudStateRef.current !== 'synced') return false;
     if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return false;
     return true;
@@ -630,6 +748,7 @@ export function useWhiteboardSync() {
       try {
         await updateDoc(doc(db, 'rooms', roomId, 'pages', pageId), {
           elements: sanitizeElementsForFirestore(elements),
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
@@ -651,6 +770,7 @@ export function useWhiteboardSync() {
           name: page.name.slice(0, 80),
           background: page.background,
           order: page.order,
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
@@ -673,6 +793,7 @@ export function useWhiteboardSync() {
           background: page.background,
           order: page.order,
           elements: sanitizeElementsForFirestore(page.elements),
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
@@ -697,7 +818,7 @@ export function useWhiteboardSync() {
 
       const pid = activePageIdRef.current;
       channelRef.current?.postMessage({
-        senderId: clientInstanceId.current,
+        senderId: boardDeviceIdRef.current,
         type: 'liveStroke',
         roomId,
         payload: { pageId: pid, element },
@@ -710,6 +831,7 @@ export function useWhiteboardSync() {
           pageId: pid,
           active: Boolean(element),
           element: sanitized,
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         }).catch(() => {
@@ -851,6 +973,7 @@ export function useWhiteboardSync() {
         try {
           await updateDoc(doc(db, 'rooms', roomId), {
             activePageId: pageId,
+            sourceDeviceId: boardDeviceIdRef.current,
             updatedBy: userRef.current.uid,
             updatedAt: serverTimestamp(),
           });
@@ -888,6 +1011,7 @@ export function useWhiteboardSync() {
           background: newPage.background,
           order: newPage.order,
           elements: [],
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -895,6 +1019,7 @@ export function useWhiteboardSync() {
         batch.update(doc(db, 'rooms', roomId), {
           activePageId: newPage.pageId,
           pageOrder: nextOrder,
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
@@ -950,6 +1075,7 @@ export function useWhiteboardSync() {
           batch.update(doc(db, 'rooms', roomId), {
             activePageId: nextActiveId,
             pageOrder: filtered.map((p) => p.pageId),
+            sourceDeviceId: boardDeviceIdRef.current,
             updatedBy: userRef.current.uid,
             updatedAt: serverTimestamp(),
           });
@@ -1067,7 +1193,7 @@ export function useWhiteboardSync() {
         // Ignore
       }
 
-      if (userRef.current && userRef.current.emailVerified) {
+      if (userRef.current) {
         const tplPath = `users/${userRef.current.uid}/templates/${newTpl.templateId}`;
         try {
           await setDoc(doc(db, 'users', userRef.current.uid, 'templates', newTpl.templateId), {
@@ -1099,7 +1225,7 @@ export function useWhiteboardSync() {
       } catch {
         // Ignore
       }
-      if (userRef.current && userRef.current.emailVerified) {
+      if (userRef.current) {
         try {
           await deleteDoc(doc(db, 'users', userRef.current.uid, 'templates', templateId));
         } catch {
@@ -1118,13 +1244,13 @@ export function useWhiteboardSync() {
 
     const snapshot = saveToLocal(pagesRef.current, targetId);
     channelRef.current?.postMessage({
-      senderId: clientInstanceId.current,
+      senderId: boardDeviceIdRef.current,
       type: 'state',
       roomId,
       payload: snapshot,
     } satisfies BroadcastPacket);
 
-    if (userRef.current && userRef.current.emailVerified && cloudStateRef.current === 'synced') {
+    if (userRef.current && cloudStateRef.current === 'synced') {
       try {
         const batch = writeBatch(db);
         batch.update(doc(db, 'rooms', roomId, 'pages', current.pageId), {
@@ -1132,11 +1258,13 @@ export function useWhiteboardSync() {
           background: current.background,
           order: current.order,
           elements: sanitizeElementsForFirestore(current.elements),
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
         batch.update(doc(db, 'rooms', roomId), {
           activePageId: current.pageId,
+          sourceDeviceId: boardDeviceIdRef.current,
           updatedBy: userRef.current.uid,
           updatedAt: serverTimestamp(),
         });
@@ -1189,7 +1317,7 @@ export function useWhiteboardSync() {
       return {
         ok: true,
         roomId: cleaned,
-        needsSignIn: !(userRef.current && userRef.current.emailVerified),
+        needsSignIn: !userRef.current,
       };
     },
     []
@@ -1209,13 +1337,13 @@ export function useWhiteboardSync() {
 
       if (
         userRef.current &&
-        userRef.current.emailVerified &&
         cloudStateRef.current === 'synced' &&
         roomOwnerIdRef.current === userRef.current.uid
       ) {
         try {
           await updateDoc(doc(db, 'rooms', roomId), {
             title: cleaned,
+            sourceDeviceId: boardDeviceIdRef.current,
             updatedBy: userRef.current.uid,
             updatedAt: serverTimestamp(),
           });
@@ -1226,6 +1354,16 @@ export function useWhiteboardSync() {
     },
     [broadcastLocalState, roomId, saveToLocal]
   );
+
+  const retryCloudConnect = useCallback(async () => {
+    setAuthError(null);
+    if (!auth.currentUser) {
+      anonAttemptedRef.current = true;
+      const ok = await ensureAnonymousSession();
+      if (!ok) return;
+    }
+    setSyncNonce((n) => n + 1);
+  }, [ensureAnonymousSession]);
 
   const handleGoogleSignIn = useCallback(async () => {
     setAuthError(null);
@@ -1265,6 +1403,8 @@ export function useWhiteboardSync() {
     setAuthError(null);
     try {
       await signOutGoogle();
+      // Fall back cleanly to a fresh anonymous session so real-time sync keeps working
+      anonAttemptedRef.current = false;
     } catch (error) {
       console.error('Sign out failed:', error);
     }
@@ -1301,6 +1441,8 @@ export function useWhiteboardSync() {
     canRedo,
     emitLiveStroke,
     remoteLiveElement: remoteLivePageId === activePage?.pageId ? remoteLiveElement : null,
+    isRemoteTransmitting,
+    boardDeviceId: boardDeviceIdRef.current,
     isLiveBroadcast,
     toggleLiveBroadcast,
     publishDraftNow,
@@ -1309,8 +1451,10 @@ export function useWhiteboardSync() {
     user,
     authReady,
     authError,
+    anonymousProviderDisabled,
     cloudState,
     cloudMessage,
+    retryCloudConnect,
     handleGoogleSignIn,
     handleGoogleSignOut,
     allTemplates,

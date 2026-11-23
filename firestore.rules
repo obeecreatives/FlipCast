@@ -8,12 +8,10 @@ service cloud.firestore {
     }
 
     // --- Global Hardened Primitives ---
+    // FlipCast explicitly supports Firebase Anonymous Auth (zero-email instant sync)
+    // alongside optional Google Sign-In. Every operation strictly requires a valid Firebase session.
     function isSignedIn() {
       return request.auth != null;
-    }
-
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
     function incoming() {
@@ -67,7 +65,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'roomId', 'ownerId', 'title', 'activePageId', 'pageOrder',
-          'updatedBy', 'createdAt', 'updatedAt'
+          'sourceDeviceId', 'updatedBy', 'createdAt', 'updatedAt'
         ])
         && isValidRoomId(data.roomId) && data.roomId == roomId
         && isValidId(data.ownerId)
@@ -75,6 +73,7 @@ service cloud.firestore {
         && isValidPageId(data.activePageId)
         && data.pageOrder is list && data.pageOrder.size() >= 1 && data.pageOrder.size() <= 50
         && isValidPageId(data.pageOrder[0])
+        && (!('sourceDeviceId' in data) || isValidPageId(data.sourceDeviceId))
         && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
         && data.createdAt is timestamp
         && data.updatedAt is timestamp && data.updatedAt == request.time;
@@ -96,7 +95,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'pageId', 'roomId', 'ownerId', 'name', 'background',
-          'order', 'elements', 'updatedBy', 'createdAt', 'updatedAt'
+          'order', 'elements', 'sourceDeviceId', 'updatedBy', 'createdAt', 'updatedAt'
         ])
         && isValidPageId(data.pageId) && data.pageId == pageId
         && isValidRoomId(data.roomId) && data.roomId == roomId
@@ -106,6 +105,7 @@ service cloud.firestore {
         && data.order is int && data.order >= 0 && data.order <= 500
         && data.elements is list && data.elements.size() <= 400
         && (data.elements.size() == 0 || data.elements[0] is map)
+        && (!('sourceDeviceId' in data) || isValidPageId(data.sourceDeviceId))
         && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
         && data.createdAt is timestamp
         && data.updatedAt is timestamp && data.updatedAt == request.time;
@@ -116,12 +116,13 @@ service cloud.firestore {
           'roomId', 'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'roomId', 'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
+          'roomId', 'pageId', 'active', 'element', 'sourceDeviceId', 'updatedBy', 'updatedAt'
         ])
         && isValidRoomId(data.roomId) && data.roomId == roomId
         && isValidPageId(data.pageId)
         && data.active is bool
         && data.element is map
+        && (!('sourceDeviceId' in data) || isValidPageId(data.sourceDeviceId))
         && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
         && data.updatedAt is timestamp && data.updatedAt == request.time;
     }
@@ -148,16 +149,16 @@ service cloud.firestore {
 
     // --- Collection: /rooms/{roomId} ---
     match /rooms/{roomId} {
-      allow get: if isVerifiedUser() && isValidRoomId(roomId);
-      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidRoomId(roomId);
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
 
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidRoomId(roomId)
         && isValidRoom(incoming(), roomId)
         && incoming().ownerId == request.auth.uid
         && incoming().createdAt == request.time;
 
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidRoomId(roomId)
         && isValidRoom(incoming(), roomId)
         && incoming().ownerId == existing().ownerId
@@ -168,7 +169,7 @@ service cloud.firestore {
           (
             existing().ownerId == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'title', 'activePageId', 'pageOrder', 'updatedBy', 'updatedAt'
+              'title', 'activePageId', 'pageOrder', 'sourceDeviceId', 'updatedBy', 'updatedAt'
             ])
           )
           ||
@@ -176,24 +177,24 @@ service cloud.firestore {
           (
             isActiveRoomEditor(roomId)
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'activePageId', 'pageOrder', 'updatedBy', 'updatedAt'
+              'activePageId', 'pageOrder', 'sourceDeviceId', 'updatedBy', 'updatedAt'
             ])
           )
         );
 
-      allow delete: if isVerifiedUser()
+      allow delete: if isSignedIn()
         && isValidRoomId(roomId)
         && existing().ownerId == request.auth.uid;
 
       // --- Subcollection: /rooms/{roomId}/editors/{editorUid} ---
       match /editors/{editorUid} {
-        allow get: if isVerifiedUser()
+        allow get: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidId(editorUid)
           && (request.auth.uid == editorUid || isRoomOwner(roomId));
-        allow list: if isVerifiedUser() && existing().uid == request.auth.uid;
+        allow list: if isSignedIn() && existing().uid == request.auth.uid;
 
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidId(editorUid)
           && isValidRoomEditor(incoming(), roomId, editorUid)
@@ -206,7 +207,7 @@ service cloud.firestore {
 
         allow update: if false;
 
-        allow delete: if isVerifiedUser()
+        allow delete: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidId(editorUid)
           && (request.auth.uid == editorUid || isRoomOwner(roomId));
@@ -214,13 +215,13 @@ service cloud.firestore {
 
       // --- Subcollection: /rooms/{roomId}/pages/{pageId} ---
       match /pages/{pageId} {
-        allow get: if isVerifiedUser()
+        allow get: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidPageId(pageId)
           && isAuthorizedRoomMember(roomId);
-        allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
 
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidPageId(pageId)
           && isValidFlipchartPage(incoming(), roomId, pageId)
@@ -232,7 +233,7 @@ service cloud.firestore {
             || isActiveRoomEditor(roomId)
           );
 
-        allow update: if isVerifiedUser()
+        allow update: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidPageId(pageId)
           && isValidFlipchartPage(incoming(), roomId, pageId)
@@ -242,12 +243,12 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && isAuthorizedRoomMember(roomId)
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['elements', 'updatedBy', 'updatedAt'])
-            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'updatedBy', 'updatedAt'])
-            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'elements', 'updatedBy', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['elements', 'sourceDeviceId', 'updatedBy', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'sourceDeviceId', 'updatedBy', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'background', 'order', 'elements', 'sourceDeviceId', 'updatedBy', 'updatedAt'])
           );
 
-        allow delete: if isVerifiedUser()
+        allow delete: if isSignedIn()
           && isValidRoomId(roomId)
           && isValidPageId(pageId)
           && isAuthorizedRoomMember(roomId);
@@ -255,29 +256,29 @@ service cloud.firestore {
 
       // --- Subcollection: /rooms/{roomId}/liveStroke/{slotId} ---
       match /liveStroke/{slotId} {
-        allow get: if isVerifiedUser()
+        allow get: if isSignedIn()
           && isValidRoomId(roomId)
           && slotId == 'current'
           && isAuthorizedRoomMember(roomId);
         allow list: if false;
 
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidRoomId(roomId)
           && slotId == 'current'
           && isValidLiveStroke(incoming(), roomId)
           && isAuthorizedRoomMember(roomId);
 
-        allow update: if isVerifiedUser()
+        allow update: if isSignedIn()
           && isValidRoomId(roomId)
           && slotId == 'current'
           && isValidLiveStroke(incoming(), roomId)
           && incoming().roomId == existing().roomId
           && isAuthorizedRoomMember(roomId)
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'pageId', 'active', 'element', 'updatedBy', 'updatedAt'
+            'pageId', 'active', 'element', 'sourceDeviceId', 'updatedBy', 'updatedAt'
           ]);
 
-        allow delete: if isVerifiedUser()
+        allow delete: if isSignedIn()
           && isValidRoomId(roomId)
           && slotId == 'current'
           && isAuthorizedRoomMember(roomId);
@@ -286,19 +287,19 @@ service cloud.firestore {
 
     // --- Collection: /users/{userId}/templates/{templateId} ---
     match /users/{userId}/templates/{templateId} {
-      allow get: if isVerifiedUser()
+      allow get: if isSignedIn()
         && isValidId(userId)
         && isValidPageId(templateId)
         && request.auth.uid == userId;
-      allow list: if isVerifiedUser() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && existing().userId == request.auth.uid;
 
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(userId)
         && isValidPageId(templateId)
         && isValidNoteTemplate(incoming(), userId, templateId)
         && incoming().createdAt == request.time;
 
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(userId)
         && isValidPageId(templateId)
         && isValidNoteTemplate(incoming(), userId, templateId)
@@ -309,7 +310,7 @@ service cloud.firestore {
           'title', 'category', 'background', 'blocks', 'updatedAt'
         ]);
 
-      allow delete: if isVerifiedUser()
+      allow delete: if isSignedIn()
         && isValidId(userId)
         && isValidPageId(templateId)
         && request.auth.uid == userId;

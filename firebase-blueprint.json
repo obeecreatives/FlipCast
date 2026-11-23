@@ -2,7 +2,7 @@
   "entities": {
     "Room": {
       "title": "Room",
-      "description": "Shared real-time whiteboard and flipchart room connecting a Projector/Laptop host and Tablet/Mobile remote.",
+      "description": "Shared real-time whiteboard and flipchart room connecting a Projector/Laptop host, Extend screen, and Tablet/Mobile remote via instant Firebase Auth (anonymous or Google).",
       "type": "object",
       "properties": {
         "roomId": {
@@ -35,6 +35,13 @@
         "pageOrder": {
           "type": "array",
           "description": "Ordered list of flipchart page IDs (max 50 pages)."
+        },
+        "sourceDeviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique per-tab/per-device session ID (boardDeviceId) of the writer to prevent echo overwrites."
         },
         "updatedBy": {
           "type": "string",
@@ -137,6 +144,13 @@
           "type": "array",
           "description": "Bounded list of native vector drawing elements (max 400 elements per page)."
         },
+        "sourceDeviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique per-tab/per-device session ID (boardDeviceId) of the writer."
+        },
         "updatedBy": {
           "type": "string",
           "minLength": 1,
@@ -188,6 +202,13 @@
         "element": {
           "type": "object",
           "description": "In-progress vector stroke or shape map when active is true, or empty map when cleared."
+        },
+        "sourceDeviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique per-device session ID (boardDeviceId) so the sender ignores its own echo."
         },
         "updatedBy": {
           "type": "string",
@@ -272,7 +293,7 @@
     },
     "/rooms/{roomId}/editors/{editorUid}": {
       "schema": { "$ref": "#/entities/RoomEditor" },
-      "description": "Verified presenters collaborating on a room via direct room code/QR."
+      "description": "Presenters collaborating on a room via direct room code/QR (anonymous or Google auth)."
     },
     "/rooms/{roomId}/pages/{pageId}": {
       "schema": { "$ref": "#/entities/FlipchartPage" },

@@ -28,10 +28,12 @@ interface ConnectModalProps {
   roomId: string;
   user: User | null;
   authError?: string | null;
+  anonymousProviderDisabled?: boolean;
   cloudState: CloudSyncState;
   cloudMessage: string;
   onSwitchRoom: (nextRoom: string) => SwitchRoomResult;
   onCreateNewRoom: () => SwitchRoomResult;
+  onRetryConnect: () => Promise<void>;
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSwitchToExtendHere: () => void;
@@ -45,10 +47,12 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   roomId,
   user,
   authError,
+  anonymousProviderDisabled = false,
   cloudState,
   cloudMessage,
   onSwitchRoom,
   onCreateNewRoom,
+  onRetryConnect,
   onSignIn,
   onSignOut,
   onSwitchToExtendHere,
@@ -56,6 +60,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   onRoomSwitched,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrVersion, setQrVersion] = useState<string>(() => Date.now().toString(36));
   const [copiedTarget, setCopiedTarget] = useState<'tablet' | 'extend' | null>(null);
   const [roomInput, setRoomInput] = useState(roomId);
   const [roomFeedback, setRoomFeedback] = useState<{
@@ -64,18 +69,21 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   } | null>(null);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const tabletUrl = `${origin}/?view=tablet&room=${encodeURIComponent(roomId)}`;
-  const extendUrl = `${origin}/?view=extend&room=${encodeURIComponent(roomId)}`;
+  // Anti-cache &v=... parameter ensures Tablet/HP always opens the latest app version when scanning QR
+  const tabletUrl = `${origin}/?view=tablet&room=${encodeURIComponent(roomId)}&v=${qrVersion}`;
+  const extendUrl = `${origin}/?view=extend&room=${encodeURIComponent(roomId)}&v=${qrVersion}`;
 
   useEffect(() => {
     setRoomInput(roomId);
   }, [roomId]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      setQrVersion(Date.now().toString(36));
+    } else {
       setRoomFeedback(null);
     }
-  }, [isOpen]);
+  }, [isOpen, roomId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -101,6 +109,9 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   }, [isOpen, tabletUrl]);
 
   if (!isOpen) return null;
+
+  const isGoogleSignedIn = Boolean(user && !user.isAnonymous);
+  const isAnonConnected = Boolean(user && user.isAnonymous);
 
   const copyLink = async (text: string, target: 'tablet' | 'extend') => {
     try {
@@ -130,12 +141,14 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
     if (res.needsSignIn) {
       setRoomFeedback({
         tone: 'warning',
-        text: `Kode ruang diatur ke ${joinedCode} (mode lokal). Untuk menyambungkan PC & Tablet antar perangkat, klik "Masuk Google" di atas pada kedua perangkat.`,
+        text: anonymousProviderDisabled
+          ? `Kode ruang diatur ke ${joinedCode} (mode lokal). Aktifkan Anonymous di Firebase Console atau klik "Masuk Google" di atas untuk sinkronisasi real-time.`
+          : `Kode ruang diatur ke ${joinedCode}. Sedang menyambungkan ke cloud...`,
       });
     } else {
       setRoomFeedback({
         tone: 'success',
-        text: `Ruang ${joinedCode} dibuka — sinkronisasi real-time Firestore aktif.`,
+        text: `Ruang ${joinedCode} dibuka — sinkronisasi real-time aktif tanpa login email.`,
       });
       window.setTimeout(() => {
         onClose();
@@ -150,8 +163,8 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
       setRoomFeedback({
         tone: res.needsSignIn ? 'warning' : 'success',
         text: res.needsSignIn
-          ? `Ruang baru ${res.roomId} dibuat (mode lokal). Masuk Google di kedua perangkat untuk sinkronisasi real-time.`
-          : `Ruang baru ${res.roomId} dibuat dan siap dihubungkan.`,
+          ? `Ruang baru ${res.roomId} dibuat (mode lokal). Aktifkan koneksi cloud di atas untuk sinkronisasi antar perangkat.`
+          : `Ruang baru ${res.roomId} dibuat dan siap dihubungkan lewat QR Code.`,
       });
     }
   };
@@ -172,7 +185,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
               Hubungkan Tablet / HP & Layar Proyektor
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Scan QR Code dari kamera Tablet/HP untuk langsung menulis real-time tanpa PIN.
+              Scan QR Code dari kamera Tablet/HP untuk langsung menulis real-time tanpa login email & tanpa PIN.
             </p>
           </div>
           <button
@@ -246,27 +259,74 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 
           {/* Right: Cloud Sync, Room & Extend Controls */}
           <div className="md:col-span-7 flex flex-col justify-between gap-4">
-            {/* Cloud Sync (Firebase Firestore) */}
-            <div className="rounded-xl border border-slate-200 p-4">
+            {/* Cloud Sync (Zero-Email Auto Anonymous Auth + Optional Google) */}
+            <div
+              className={`rounded-xl border p-4 ${
+                cloudState === 'synced'
+                  ? 'border-teal-200 bg-teal-50/40'
+                  : anonymousProviderDisabled
+                  ? 'border-amber-200 bg-amber-50/40'
+                  : 'border-slate-200'
+              }`}
+            >
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <Cloud
                     className={`w-5 h-5 mt-0.5 shrink-0 ${
-                      cloudState === 'synced' ? 'text-teal-600' : 'text-slate-400'
+                      cloudState === 'synced'
+                        ? 'text-teal-600'
+                        : anonymousProviderDisabled
+                        ? 'text-amber-600'
+                        : 'text-slate-400'
                     }`}
                   />
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-slate-900">
-                      Sinkronisasi Real-Time Antar Perangkat (Firestore)
+                      {cloudState === 'synced' && isAnonConnected
+                        ? 'Koneksi Otomatis Aktif (Tanpa Email)'
+                        : 'Sinkronisasi Real-Time Antar Perangkat'}
                     </h3>
                     <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
                       {cloudMessage}
                     </p>
-                    {user && (
-                      <p className="text-xs text-slate-500 mt-1">
-                        Akun aktif: <span className="font-medium text-slate-800">{user.email}</span>
+                    {isGoogleSignedIn && user?.email && (
+                      <p className="text-xs text-slate-500 mt-1 truncate">
+                        Akun Google: <span className="font-medium text-slate-800">{user.email}</span>
                       </p>
                     )}
+
+                    {anonymousProviderDisabled && !user && (
+                      <div className="mt-2.5 rounded-lg bg-white border border-amber-200 p-2.5 text-xs text-slate-700 space-y-1.5">
+                        <p className="font-semibold text-amber-900">
+                          Aktifkan 1 tombol di Firebase Console agar langsung konek tanpa email:
+                        </p>
+                        <p className="leading-relaxed text-slate-600">
+                          Firebase Console → <span className="font-medium text-slate-900">Authentication</span> →{' '}
+                          <span className="font-medium text-slate-900">Sign-in method</span> →{' '}
+                          <span className="font-medium text-slate-900">Anonymous</span> →{' '}
+                          <span className="font-medium text-slate-900">Enable & Save</span>.
+                        </p>
+                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void onRetryConnect()}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            Coba Sambung Ulang
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onSignIn()}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
+                          >
+                            <LogIn className="w-3.5 h-3.5" />
+                            Atau Masuk Google
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {authError && (
                       <p className="mt-2 rounded-lg bg-red-50 border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-700 leading-snug">
                         {authError}
@@ -274,25 +334,36 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                     )}
                   </div>
                 </div>
-                {user ? (
+
+                {isGoogleSignedIn ? (
                   <button
                     type="button"
-                    onClick={onSignOut}
-                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    onClick={() => void onSignOut()}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     Keluar
                   </button>
-                ) : (
+                ) : isAnonConnected ? (
                   <button
                     type="button"
-                    onClick={onSignIn}
-                    className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700 transition-colors"
+                    onClick={() => void onSignIn()}
+                    title="Opsional: Masuk Google jika ingin menyimpan template pribadi lintas akun"
+                    className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                   >
                     <LogIn className="w-3.5 h-3.5" />
-                    Masuk Google
+                    Google (Opsional)
                   </button>
-                )}
+                ) : !anonymousProviderDisabled && cloudState !== 'connecting' ? (
+                  <button
+                    type="button"
+                    onClick={() => void onRetryConnect()}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Sambung
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -302,7 +373,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 Kode Ruang Papan Tulis
               </label>
               <p className="text-xs text-slate-500">
-                Gunakan kode ruang yang sama di Laptop dan Tablet/HP, atau buat kode ruang baru untuk sesi lain.
+                Samakan kode ruang di Laptop dan Tablet/HP (atau scan QR di samping) — tidak perlu Wi-Fi yang sama atau akun email.
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -343,16 +414,6 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                   }`}
                 >
                   <p>{roomFeedback.text}</p>
-                  {roomFeedback.tone === 'warning' && !user && (
-                    <button
-                      type="button"
-                      onClick={() => void onSignIn()}
-                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors"
-                    >
-                      <LogIn className="w-3.5 h-3.5" />
-                      Masuk Google Sekarang
-                    </button>
-                  )}
                 </div>
               )}
             </form>
@@ -364,7 +425,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 Jendela Extend Layar ke-2 (Proyektor Bersih)
               </div>
               <p className="text-xs text-slate-500">
-                Buka di tab terpisah lalu geser ke layar monitor/proyektor ke-2 untuk tampilan kanvas penuh tanpa toolbar.
+                Buka di tab terpisah lalu geser ke monitor/proyektor ke-2 (HDMI) untuk tampilan kanvas penuh tanpa toolbar.
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <a

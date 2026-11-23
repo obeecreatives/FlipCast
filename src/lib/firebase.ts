@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
+  signInAnonymously,
   signInWithPopup,
   signInWithRedirect,
   signOut,
@@ -78,6 +79,10 @@ export function isPermissionError(error: unknown): boolean {
 export function isQuotaError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return msg.toLowerCase().includes('quota exceeded');
+}
+
+export async function signInAnonymousSession() {
+  return signInAnonymously(auth);
 }
 
 export async function signInWithGoogle() {

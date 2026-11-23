@@ -321,13 +321,49 @@ export default function App() {
               /
             </span>
             <div className="hidden sm:flex items-center gap-2 text-xs text-slate-600 min-w-0">
-              <span className="font-mono font-semibold text-slate-800 whitespace-nowrap">
-                {wb.roomId}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="truncate max-w-[180px]">
-                {wb.cloudState === 'synced' ? 'Cloud Real-Time' : 'Sinkronisasi Lokal'}
-              </span>
+              <button
+                type="button"
+                onClick={() => setIsConnectOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors min-w-0"
+                title="Klik untuk lihat QR Code & status koneksi cloud"
+              >
+                <span className="font-mono font-semibold text-slate-800 whitespace-nowrap">
+                  {wb.roomId}
+                </span>
+                <span aria-hidden="true" className="text-slate-300">
+                  ·
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1.5 truncate max-w-[175px] font-medium ${
+                    wb.cloudState === 'synced'
+                      ? 'text-teal-700'
+                      : wb.cloudState === 'connecting'
+                      ? 'text-slate-500'
+                      : 'text-amber-700'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      wb.cloudState === 'synced'
+                        ? 'bg-teal-500'
+                        : wb.cloudState === 'connecting'
+                        ? 'bg-slate-400 animate-pulse'
+                        : 'bg-amber-500'
+                    }`}
+                  />
+                  {wb.cloudState === 'synced'
+                    ? 'Cloud Real-Time'
+                    : wb.cloudState === 'connecting'
+                    ? 'Menyambung...'
+                    : 'Mode Lokal'}
+                </span>
+              </button>
+              {!isTabletMode && wb.isRemoteTransmitting && (
+                <span className="hidden lg:inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md whitespace-nowrap">
+                  <Radio className="w-3 h-3 animate-pulse" />
+                  Remote Aktif
+                </span>
+              )}
             </div>
           </div>
 
@@ -735,10 +771,12 @@ export default function App() {
         roomId={wb.roomId}
         user={wb.user}
         authError={wb.authError}
+        anonymousProviderDisabled={wb.anonymousProviderDisabled}
         cloudState={wb.cloudState}
         cloudMessage={wb.cloudMessage}
         onSwitchRoom={wb.switchRoom}
         onCreateNewRoom={wb.createNewRoom}
+        onRetryConnect={wb.retryCloudConnect}
         onSignIn={wb.handleGoogleSignIn}
         onSignOut={wb.handleGoogleSignOut}
         onSwitchToExtendHere={() => wb.setViewMode('extend')}
