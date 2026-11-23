@@ -292,6 +292,16 @@ export function useWhiteboardSync() {
   const lastLiveStrokePushRef = useRef<number>(0);
   const lastPeerLiveStrokePushRef = useRef<number>(0);
 
+  // True revision & anti-clobber reconnect guards (prevents stale host-sync from wiping newer Tablet strokes)
+  const boardRevisionAtRef = useRef<number>(
+    initialRoomData.pages.some((p) => p.elements.length > 0) || initialRoomData.pages.length > 1
+      ? initialRoomData.updatedAtMs || Date.now()
+      : 0
+  );
+  const hasInitialHostSyncRef = useRef<boolean>(false);
+  const hasLocalEditsSinceJoinRef = useRef<boolean>(false);
+  const hasUnsyncedLocalEditsRef = useRef<boolean>(false);
+
   const pulseRemoteSignal = useCallback(() => {
     setIsRemoteTransmitting(true);
     if (remoteSignalTimerRef.current !== null) {
@@ -326,6 +336,10 @@ export function useWhiteboardSync() {
     } catch {
       // Ignore
     }
+    // Reset initial host-sync guard only when switching rooms or roles (not on transient reconnects)
+    hasInitialHostSyncRef.current = false;
+    hasLocalEditsSinceJoinRef.current = false;
+    hasUnsyncedLocalEditsRef.current = false;
   }, [roomId, viewMode]);
 
   // Listen to Firebase Auth state
@@ -383,12 +397,17 @@ export function useWhiteboardSync() {
   // Persist local room state
   const saveToLocal = useCallback(
     (nextPages: FlipchartPage[], nextActiveId: string, overrides?: Partial<PersistedRoomLocal>) => {
+      const revisionTs =
+        typeof overrides?.updatedAtMs === 'number'
+          ? overrides.updatedAtMs
+          : Date.now();
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current, revisionTs);
       const snapshot: PersistedRoomLocal = {
         roomId,
         title: overrides?.title ?? roomTitleRef.current,
         activePageId: nextActiveId,
         pages: nextPages,
-        updatedAtMs: Date.now(),
+        updatedAtMs: revisionTs,
       };
       try {
         localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${roomId}`, JSON.stringify(snapshot));
@@ -435,7 +454,7 @@ export function useWhiteboardSync() {
   }, [roomId, viewMode]);
 
   const broadcastLocalState = useCallback(
-    (snapshot: PersistedRoomLocal) => {
+    (snapshot: PersistedRoomLocal, skipPeerState = false) => {
       if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
       channelRef.current?.postMessage({
         senderId: boardDeviceIdRef.current,
@@ -443,7 +462,12 @@ export function useWhiteboardSync() {
         roomId,
         payload: snapshot,
       } satisfies BroadcastPacket);
-      peerBridgeRef.current?.sendState(snapshot);
+      if (!skipPeerState) {
+        const sent = peerBridgeRef.current?.sendState(snapshot) ?? false;
+        if (!sent) {
+          hasUnsyncedLocalEditsRef.current = true;
+        }
+      }
     },
     [roomId, viewMode]
   );
@@ -461,7 +485,7 @@ export function useWhiteboardSync() {
         title: roomTitleRef.current,
         activePageId: activePageIdRef.current,
         pages: pagesRef.current,
-        updatedAtMs: Date.now(),
+        updatedAtMs: boardRevisionAtRef.current,
       }),
       onStateChange: (nextState, count, detail) => {
         setP2pState(nextState);
@@ -469,16 +493,106 @@ export function useWhiteboardSync() {
         setP2pMessage(detail);
       },
       onReceiveHostSync: (incoming) => {
-        // Initial handshake from PC/Laptop Host always loads the active board on Tablet/HP immediately
         if (!incoming || !Array.isArray(incoming.pages) || incoming.pages.length === 0) return;
+
+        const isFirstHandshake = !hasInitialHostSyncRef.current;
+        const incomingTs = typeof incoming.updatedAtMs === 'number' ? incoming.updatedAtMs : 0;
+        const localTs = boardRevisionAtRef.current;
+
+        // First connection to this room before any local edits: adopt PC/Laptop Host's active board & notify once
+        if (isFirstHandshake && !hasLocalEditsSinceJoinRef.current) {
+          hasInitialHostSyncRef.current = true;
+          const nextActiveId = incoming.activePageId || incoming.pages[0].pageId;
+          const nextTitle = incoming.title || 'obeecreatives — Sesi Papan Tulis';
+          pagesRef.current = incoming.pages;
+          activePageIdRef.current = nextActiveId;
+          roomTitleRef.current = nextTitle;
+          boardRevisionAtRef.current = incomingTs;
+          setPages(incoming.pages);
+          setActivePageId(nextActiveId);
+          setRoomTitle(nextTitle);
+          setRemoteLiveElement(null);
+          setLastHostSyncedAt(Date.now());
+          const saved = saveToLocal(incoming.pages, nextActiveId, {
+            title: nextTitle,
+            updatedAtMs: incomingTs,
+          });
+          channelRef.current?.postMessage({
+            senderId: boardDeviceIdRef.current,
+            type: 'state',
+            roomId,
+            payload: saved,
+          } satisfies BroadcastPacket);
+          return;
+        }
+
+        // Subsequent silent reconnect OR Tablet already has active local edits:
+        // NEVER overwrite newer Tablet strokes with stale PC state & NEVER spam the connection toast!
+        hasInitialHostSyncRef.current = true;
+
+        if (viewMode === 'tablet' && !isLiveBroadcastRef.current) {
+          return;
+        }
+
+        if (hasUnsyncedLocalEditsRef.current || localTs > incomingTs) {
+          // Tablet is newer or had strokes drawn while WebRTC briefly reconnected -> push UP to PC silently!
+          hasUnsyncedLocalEditsRef.current = false;
+          const localSnapshot = {
+            roomId,
+            title: roomTitleRef.current,
+            activePageId: activePageIdRef.current,
+            pages: pagesRef.current,
+            updatedAtMs: Math.max(localTs, incomingTs + 1),
+          };
+          boardRevisionAtRef.current = localSnapshot.updatedAtMs;
+          peerBridgeRef.current?.sendState(localSnapshot);
+          return;
+        }
+
+        if (incomingTs > localTs) {
+          // PC genuinely received newer edits while we were briefly offline -> update silently
+          const nextActiveId = incoming.activePageId || incoming.pages[0].pageId;
+          const nextTitle = incoming.title || 'obeecreatives — Sesi Papan Tulis';
+          pagesRef.current = incoming.pages;
+          activePageIdRef.current = nextActiveId;
+          roomTitleRef.current = nextTitle;
+          boardRevisionAtRef.current = incomingTs;
+          setPages(incoming.pages);
+          setActivePageId(nextActiveId);
+          setRoomTitle(nextTitle);
+          setRemoteLiveElement(null);
+          const saved = saveToLocal(incoming.pages, nextActiveId, {
+            title: nextTitle,
+            updatedAtMs: incomingTs,
+          });
+          channelRef.current?.postMessage({
+            senderId: boardDeviceIdRef.current,
+            type: 'state',
+            roomId,
+            payload: saved,
+          } satisfies BroadcastPacket);
+        }
+      },
+      onReceiveState: (incoming) => {
+        if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+        if (!incoming || !Array.isArray(incoming.pages) || incoming.pages.length === 0) return;
+        const incomingTs = typeof incoming.updatedAtMs === 'number' ? incoming.updatedAtMs : Date.now();
+        pulseRemoteSignal();
+        const nextActiveId = incoming.activePageId || incoming.pages[0].pageId;
+        const nextTitle = incoming.title || 'obeecreatives — Sesi Papan Tulis';
+        pagesRef.current = incoming.pages;
+        activePageIdRef.current = nextActiveId;
+        roomTitleRef.current = nextTitle;
+        boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current, incomingTs);
         setPages(incoming.pages);
-        setActivePageId(incoming.activePageId || incoming.pages[0].pageId);
-        setRoomTitle(incoming.title || 'Sesi Papan Tulis');
+        setActivePageId(nextActiveId);
+        setRoomTitle(nextTitle);
         setRemoteLiveElement(null);
-        setLastHostSyncedAt(Date.now());
-        const saved = saveToLocal(incoming.pages, incoming.activePageId || incoming.pages[0].pageId, {
-          title: incoming.title,
+        const saved = saveToLocal(incoming.pages, nextActiveId, {
+          title: nextTitle,
+          updatedAtMs: incomingTs,
         });
+        // Forward immediately to same-PC Extend window (Monitor 2) via BroadcastChannel
         channelRef.current?.postMessage({
           senderId: boardDeviceIdRef.current,
           type: 'state',
@@ -486,18 +600,48 @@ export function useWhiteboardSync() {
           payload: saved,
         } satisfies BroadcastPacket);
       },
-      onReceiveState: (incoming) => {
+      onReceiveElementUpsert: (pageId, element, updatedAtMs) => {
         if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
-        if (!incoming || !Array.isArray(incoming.pages) || incoming.pages.length === 0) return;
         pulseRemoteSignal();
-        setPages(incoming.pages);
-        setActivePageId(incoming.activePageId || incoming.pages[0].pageId);
-        setRoomTitle(incoming.title || 'Sesi Papan Tulis');
-        setRemoteLiveElement(null);
-        const saved = saveToLocal(incoming.pages, incoming.activePageId || incoming.pages[0].pageId, {
-          title: incoming.title,
+        const currentPages = pagesRef.current;
+        if (!currentPages.some((p) => p.pageId === pageId)) return;
+        const nextPages = currentPages.map((p) => {
+          if (p.pageId !== pageId) return p;
+          const exists = p.elements.some((el) => el.id === element.id);
+          const nextElements = exists
+            ? p.elements.map((el) => (el.id === element.id ? element : el))
+            : [...p.elements, element].slice(-MAX_ELEMENTS_PER_PAGE);
+          return { ...p, elements: nextElements, updatedAtMs };
         });
-        // Forward immediately to same-PC Extend window (Monitor 2) via BroadcastChannel
+        pagesRef.current = nextPages;
+        boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current, updatedAtMs);
+        setPages(nextPages);
+        setRemoteLiveElement((prev) => (prev && prev.id === element.id ? null : prev));
+        const saved = saveToLocal(nextPages, activePageIdRef.current, { updatedAtMs });
+        channelRef.current?.postMessage({
+          senderId: boardDeviceIdRef.current,
+          type: 'state',
+          roomId,
+          payload: saved,
+        } satisfies BroadcastPacket);
+      },
+      onReceiveElementRemove: (pageId, elementId, updatedAtMs) => {
+        if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+        pulseRemoteSignal();
+        const currentPages = pagesRef.current;
+        if (!currentPages.some((p) => p.pageId === pageId)) return;
+        const nextPages = currentPages.map((p) => {
+          if (p.pageId !== pageId) return p;
+          return {
+            ...p,
+            elements: p.elements.filter((el) => el.id !== elementId),
+            updatedAtMs,
+          };
+        });
+        pagesRef.current = nextPages;
+        boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current, updatedAtMs);
+        setPages(nextPages);
+        const saved = saveToLocal(nextPages, activePageIdRef.current, { updatedAtMs });
         channelRef.current?.postMessage({
           senderId: boardDeviceIdRef.current,
           type: 'state',
@@ -952,9 +1096,15 @@ export function useWhiteboardSync() {
     [canPushCloud, roomId, viewMode]
   );
 
-  // Commit elements change with per-page undo history
+  // Commit elements change with per-page undo history + synchronous ref update + optional tiny P2P delta packet
   const updateActivePageElements = useCallback(
-    (updater: (prev: CanvasElement[]) => CanvasElement[], recordHistory = true) => {
+    (
+      updater: (prev: CanvasElement[]) => CanvasElement[],
+      recordHistory = true,
+      p2pDelta?:
+        | { kind: 'upsert'; element: CanvasElement }
+        | { kind: 'remove'; elementId: string }
+    ) => {
       const targetId = activePageIdRef.current;
       const currentPages = pagesRef.current;
       const currentPage = currentPages.find((p) => p.pageId === targetId);
@@ -962,6 +1112,7 @@ export function useWhiteboardSync() {
 
       const prevElements = currentPage.elements;
       const nextElements = updater(prevElements).slice(-MAX_ELEMENTS_PER_PAGE);
+      const now = Date.now();
 
       if (recordHistory) {
         setUndoStacks((prev) => ({
@@ -974,25 +1125,57 @@ export function useWhiteboardSync() {
         }));
       }
 
+      hasLocalEditsSinceJoinRef.current = true;
       const nextPages = currentPages.map((p) =>
-        p.pageId === targetId ? { ...p, elements: nextElements, updatedAtMs: Date.now() } : p
+        p.pageId === targetId ? { ...p, elements: nextElements, updatedAtMs: now } : p
       );
+      pagesRef.current = nextPages;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
       setPages(nextPages);
-      const snapshot = saveToLocal(nextPages, targetId);
-      broadcastLocalState(snapshot);
+
+      const snapshot = saveToLocal(nextPages, targetId, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
+
+      if (p2pDelta && !(viewMode === 'tablet' && !isLiveBroadcastRef.current)) {
+        // Send compact ~200-byte delta packet over WebRTC P2P (prevents DataChannel overflow on dense boards!)
+        broadcastLocalState(snapshot, true);
+        const sent =
+          p2pDelta.kind === 'upsert'
+            ? peerBridgeRef.current?.sendElementUpsert(
+                targetId,
+                p2pDelta.element,
+                boardRevisionAtRef.current
+              ) ?? false
+            : peerBridgeRef.current?.sendElementRemove(
+                targetId,
+                p2pDelta.elementId,
+                boardRevisionAtRef.current
+              ) ?? false;
+        if (!sent) {
+          hasUnsyncedLocalEditsRef.current = true;
+        }
+      } else {
+        broadcastLocalState(snapshot);
+      }
+
       void pushPageElementsToCloud(targetId, nextElements);
     },
-    [broadcastLocalState, pushPageElementsToCloud, saveToLocal]
+    [broadcastLocalState, pushPageElementsToCloud, saveToLocal, viewMode]
   );
 
   const addElement = useCallback(
     (element: CanvasElement) => {
-      updateActivePageElements((prev) => {
-        if (prev.some((e) => e.id === element.id)) {
-          return prev.map((e) => (e.id === element.id ? element : e));
-        }
-        return [...prev, element];
-      }, true);
+      updateActivePageElements(
+        (prev) => {
+          if (prev.some((e) => e.id === element.id)) {
+            return prev.map((e) => (e.id === element.id ? element : e));
+          }
+          return [...prev, element];
+        },
+        true,
+        { kind: 'upsert', element }
+      );
     },
     [updateActivePageElements]
   );
@@ -1001,7 +1184,8 @@ export function useWhiteboardSync() {
     (element: CanvasElement) => {
       updateActivePageElements(
         (prev) => prev.map((e) => (e.id === element.id ? element : e)),
-        true
+        true,
+        { kind: 'upsert', element }
       );
     },
     [updateActivePageElements]
@@ -1009,7 +1193,10 @@ export function useWhiteboardSync() {
 
   const removeElementById = useCallback(
     (elementId: string) => {
-      updateActivePageElements((prev) => prev.filter((e) => e.id !== elementId), true);
+      updateActivePageElements((prev) => prev.filter((e) => e.id !== elementId), true, {
+        kind: 'remove',
+        elementId,
+      });
     },
     [updateActivePageElements]
   );
@@ -1037,11 +1224,15 @@ export function useWhiteboardSync() {
       [pid]: [...(prev[pid] || []).slice(-39), currentPage.elements],
     }));
 
+    const now = Date.now();
+    hasLocalEditsSinceJoinRef.current = true;
     const nextPages = pagesRef.current.map((p) =>
-      p.pageId === pid ? { ...p, elements: previousElements, updatedAtMs: Date.now() } : p
+      p.pageId === pid ? { ...p, elements: previousElements, updatedAtMs: now } : p
     );
+    pagesRef.current = nextPages;
+    boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
     setPages(nextPages);
-    const snapshot = saveToLocal(nextPages, pid);
+    const snapshot = saveToLocal(nextPages, pid, { updatedAtMs: boardRevisionAtRef.current });
     broadcastLocalState(snapshot);
     void pushPageElementsToCloud(pid, previousElements);
   }, [broadcastLocalState, pushPageElementsToCloud, saveToLocal, undoStacks]);
@@ -1061,11 +1252,15 @@ export function useWhiteboardSync() {
       [pid]: [...(prev[pid] || []).slice(-39), currentPage.elements],
     }));
 
+    const now = Date.now();
+    hasLocalEditsSinceJoinRef.current = true;
     const nextPages = pagesRef.current.map((p) =>
-      p.pageId === pid ? { ...p, elements: nextElements, updatedAtMs: Date.now() } : p
+      p.pageId === pid ? { ...p, elements: nextElements, updatedAtMs: now } : p
     );
+    pagesRef.current = nextPages;
+    boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
     setPages(nextPages);
-    const snapshot = saveToLocal(nextPages, pid);
+    const snapshot = saveToLocal(nextPages, pid, { updatedAtMs: boardRevisionAtRef.current });
     broadcastLocalState(snapshot);
     void pushPageElementsToCloud(pid, nextElements);
   }, [broadcastLocalState, pushPageElementsToCloud, redoStacks, saveToLocal]);
@@ -1074,9 +1269,14 @@ export function useWhiteboardSync() {
   const selectPage = useCallback(
     async (pageId: string) => {
       if (!pagesRef.current.some((p) => p.pageId === pageId)) return;
+      hasLocalEditsSinceJoinRef.current = true;
+      activePageIdRef.current = pageId;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, Date.now());
       setActivePageId(pageId);
       setRemoteLiveElement(null);
-      const snapshot = saveToLocal(pagesRef.current, pageId);
+      const snapshot = saveToLocal(pagesRef.current, pageId, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
       broadcastLocalState(snapshot);
 
       if (canPushCloud() && userRef.current) {
@@ -1104,9 +1304,15 @@ export function useWhiteboardSync() {
     const nextPages = [...pagesRef.current, newPage];
     const nextOrder = nextPages.map((p) => p.pageId);
 
+    hasLocalEditsSinceJoinRef.current = true;
+    pagesRef.current = nextPages;
+    activePageIdRef.current = newPage.pageId;
+    boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, Date.now());
     setPages(nextPages);
     setActivePageId(newPage.pageId);
-    const snapshot = saveToLocal(nextPages, newPage.pageId);
+    const snapshot = saveToLocal(nextPages, newPage.pageId, {
+      updatedAtMs: boardRevisionAtRef.current,
+    });
     broadcastLocalState(snapshot);
 
     if (canPushCloud() && userRef.current) {
@@ -1147,15 +1353,21 @@ export function useWhiteboardSync() {
       const cleaned = newName.trim().slice(0, 80);
       if (!cleaned) return;
       let updatedPage: FlipchartPage | null = null;
+      const now = Date.now();
       const nextPages = pagesRef.current.map((p) => {
         if (p.pageId === pageId) {
-          updatedPage = { ...p, name: cleaned, updatedAtMs: Date.now() };
+          updatedPage = { ...p, name: cleaned, updatedAtMs: now };
           return updatedPage;
         }
         return p;
       });
+      hasLocalEditsSinceJoinRef.current = true;
+      pagesRef.current = nextPages;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
       setPages(nextPages);
-      const snapshot = saveToLocal(nextPages, activePageIdRef.current);
+      const snapshot = saveToLocal(nextPages, activePageIdRef.current, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
       broadcastLocalState(snapshot);
       if (updatedPage) {
         await pushPageMetaToCloud(updatedPage);
@@ -1173,9 +1385,15 @@ export function useWhiteboardSync() {
       const nextActiveId =
         activePageIdRef.current === pageId ? filtered[0].pageId : activePageIdRef.current;
 
+      hasLocalEditsSinceJoinRef.current = true;
+      pagesRef.current = filtered;
+      activePageIdRef.current = nextActiveId;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, Date.now());
       setPages(filtered);
       setActivePageId(nextActiveId);
-      const snapshot = saveToLocal(filtered, nextActiveId);
+      const snapshot = saveToLocal(filtered, nextActiveId, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
       broadcastLocalState(snapshot);
 
       if (canPushCloud() && userRef.current) {
@@ -1204,15 +1422,21 @@ export function useWhiteboardSync() {
     async (background: PaperBackground) => {
       const targetId = activePageIdRef.current;
       let updatedPage: FlipchartPage | null = null;
+      const now = Date.now();
       const nextPages = pagesRef.current.map((p) => {
         if (p.pageId === targetId) {
-          updatedPage = { ...p, background, updatedAtMs: Date.now() };
+          updatedPage = { ...p, background, updatedAtMs: now };
           return updatedPage;
         }
         return p;
       });
+      hasLocalEditsSinceJoinRef.current = true;
+      pagesRef.current = nextPages;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
       setPages(nextPages);
-      const snapshot = saveToLocal(nextPages, targetId);
+      const snapshot = saveToLocal(nextPages, targetId, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
       broadcastLocalState(snapshot);
       if (updatedPage) {
         await pushPageMetaToCloud(updatedPage);
@@ -1254,16 +1478,22 @@ export function useWhiteboardSync() {
           ? templateElements.slice(0, MAX_ELEMENTS_PER_PAGE)
           : [...current.elements, ...templateElements].slice(-MAX_ELEMENTS_PER_PAGE);
 
+      const now = Date.now();
       const updatedPage: FlipchartPage = {
         ...current,
         background: template.background,
         elements: nextElements,
-        updatedAtMs: Date.now(),
+        updatedAtMs: now,
       };
 
       const nextPages = pagesRef.current.map((p) => (p.pageId === targetId ? updatedPage : p));
+      hasLocalEditsSinceJoinRef.current = true;
+      pagesRef.current = nextPages;
+      boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, now);
       setPages(nextPages);
-      const snapshot = saveToLocal(nextPages, targetId);
+      const snapshot = saveToLocal(nextPages, targetId, {
+        updatedAtMs: boardRevisionAtRef.current,
+      });
       broadcastLocalState(snapshot);
       await pushFullPageToCloud(updatedPage);
     },
@@ -1352,14 +1582,18 @@ export function useWhiteboardSync() {
     const current = pagesRef.current.find((p) => p.pageId === targetId);
     if (!current) return;
 
-    const snapshot = saveToLocal(pagesRef.current, targetId);
+    boardRevisionAtRef.current = Math.max(boardRevisionAtRef.current + 1, Date.now());
+    const snapshot = saveToLocal(pagesRef.current, targetId, {
+      updatedAtMs: boardRevisionAtRef.current,
+    });
     channelRef.current?.postMessage({
       senderId: boardDeviceIdRef.current,
       type: 'state',
       roomId,
       payload: snapshot,
     } satisfies BroadcastPacket);
-    peerBridgeRef.current?.sendState(snapshot);
+    const sent = peerBridgeRef.current?.sendState(snapshot) ?? false;
+    hasUnsyncedLocalEditsRef.current = !sent;
 
     if (userRef.current && cloudStateRef.current === 'synced') {
       try {
@@ -1417,6 +1651,16 @@ export function useWhiteboardSync() {
         cleaned = `OBEE-${cleaned}`;
       }
       const loaded = loadLocalRoom(cleaned);
+      hasInitialHostSyncRef.current = false;
+      hasLocalEditsSinceJoinRef.current = false;
+      hasUnsyncedLocalEditsRef.current = false;
+      boardRevisionAtRef.current =
+        loaded.pages.some((p) => p.elements.length > 0) || loaded.pages.length > 1
+          ? loaded.updatedAtMs || Date.now()
+          : 0;
+      pagesRef.current = loaded.pages;
+      activePageIdRef.current = loaded.activePageId;
+      roomTitleRef.current = loaded.title;
       setRoomId(cleaned);
       if (nextViewMode) {
         setViewMode(nextViewMode);
