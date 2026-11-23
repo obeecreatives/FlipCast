@@ -160,7 +160,13 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         fontSize: Math.round(el.fontSize),
       };
     }
-    if (el.type === 'line' || el.type === 'arrow' || el.type === 'rect' || el.type === 'ellipse') {
+    if (
+      el.type === 'line' ||
+      el.type === 'arrow' ||
+      el.type === 'rect' ||
+      el.type === 'ellipse' ||
+      el.type === 'triangle'
+    ) {
       return {
         id: el.id.slice(0, 64),
         type: el.type,
@@ -171,6 +177,9 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         y1: roundCoord(el.y1),
         x2: roundCoord(el.x2),
         y2: roundCoord(el.y2),
+        ...(typeof el.x3 === 'number' && typeof el.y3 === 'number'
+          ? { x3: roundCoord(el.x3), y3: roundCoord(el.y3) }
+          : {}),
         ...(el.isHighlight ? { isHighlight: true } : {}),
       };
     }

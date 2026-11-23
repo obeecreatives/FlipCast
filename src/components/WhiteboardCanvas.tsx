@@ -746,6 +746,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             y1: detected.y1,
             x2: detected.x2,
             y2: detected.y2,
+            ...(typeof detected.x3 === 'number' && typeof detected.y3 === 'number'
+              ? { x3: detected.x3, y3: detected.y3 }
+              : {}),
           };
 
           holdSnappedModeRef.current = detected.type === 'line' ? 'line' : 'shape';
@@ -897,6 +900,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             y1: quickDetected.y1,
             x2: quickDetected.x2,
             y2: quickDetected.y2,
+            ...(typeof quickDetected.x3 === 'number' && typeof quickDetected.y3 === 'number'
+              ? { x3: quickDetected.x3, y3: quickDetected.y3 }
+              : {}),
           };
           const originalStroke: StrokeElement = {
             ...draft,

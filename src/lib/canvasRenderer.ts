@@ -157,6 +157,23 @@ function drawStroke(
   ctx.restore();
 }
 
+function getTriangleVertices(
+  el: ShapeElement
+): [[number, number], [number, number], [number, number]] {
+  if (typeof el.x3 === 'number' && typeof el.y3 === 'number') {
+    return [
+      [el.x1, el.y1],
+      [el.x2, el.y2],
+      [el.x3, el.y3],
+    ];
+  }
+  return [
+    [(el.x1 + el.x2) / 2, el.y1],
+    [el.x2, el.y2],
+    [el.x1, el.y2],
+  ];
+}
+
 function drawShape(
   ctx: CanvasRenderingContext2D,
   el: ShapeElement,
@@ -233,6 +250,14 @@ function drawShape(
 
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (el.type === 'triangle') {
+    const [[ax, ay], [bx, by], [cx, cy]] = getTriangleVertices(el);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.lineTo(cx, cy);
+    ctx.closePath();
     ctx.stroke();
   }
 
@@ -469,6 +494,20 @@ export function getElementBounds(
       height: Math.max(16, maxY - minY + pad * 2),
     };
   }
+  if (el.type === 'triangle') {
+    const [[ax, ay], [bx, by], [cx, cy]] = getTriangleVertices(el);
+    const minX = Math.min(ax, bx, cx);
+    const maxX = Math.max(ax, bx, cx);
+    const minY = Math.min(ay, by, cy);
+    const maxY = Math.max(ay, by, cy);
+    const pad = Math.max(4, el.size / 2);
+    return {
+      x: minX - pad,
+      y: minY - pad,
+      width: Math.max(16, maxX - minX + pad * 2),
+      height: Math.max(16, maxY - minY + pad * 2),
+    };
+  }
   if (
     el.type === 'line' ||
     el.type === 'arrow' ||
@@ -529,14 +568,21 @@ export function translateElement(
     el.type === 'line' ||
     el.type === 'arrow' ||
     el.type === 'rect' ||
-    el.type === 'ellipse'
+    el.type === 'ellipse' ||
+    el.type === 'triangle'
   ) {
     return {
       ...el,
-      x1: Math.round(el.x1 + clampedDx),
-      y1: Math.round(el.y1 + clampedDy),
-      x2: Math.round(el.x2 + clampedDx),
-      y2: Math.round(el.y2 + clampedDy),
+      x1: roundCoord(el.x1 + clampedDx),
+      y1: roundCoord(el.y1 + clampedDy),
+      x2: roundCoord(el.x2 + clampedDx),
+      y2: roundCoord(el.y2 + clampedDy),
+      ...(typeof el.x3 === 'number' && typeof el.y3 === 'number'
+        ? {
+            x3: roundCoord(el.x3 + clampedDx),
+            y3: roundCoord(el.y3 + clampedDy),
+          }
+        : {}),
     };
   }
   return el;
@@ -592,7 +638,8 @@ function drawSingleElement(
     el.type === 'line' ||
     el.type === 'arrow' ||
     el.type === 'rect' ||
-    el.type === 'ellipse'
+    el.type === 'ellipse' ||
+    el.type === 'triangle'
   ) {
     drawShape(ctx, el, background, isHighlighted);
   }
@@ -747,6 +794,26 @@ export function findHitElementId(
       const edgeY = cy + ry * Math.sin(angle);
       if (Math.hypot(vx - edgeX, vy - edgeY) <= hitRadius) {
         return el.id;
+      }
+    } else if (el.type === 'triangle') {
+      const [[ax, ay], [bx, by], [cx, cy]] = getTriangleVertices(el);
+      const hitRadius = Math.max(tolerance, el.size + 8);
+      if (
+        distToSegment(vx, vy, ax, ay, bx, by) <= hitRadius ||
+        distToSegment(vx, vy, bx, by, cx, cy) <= hitRadius ||
+        distToSegment(vx, vy, cx, cy, ax, ay) <= hitRadius
+      ) {
+        return el.id;
+      }
+      if (allowInteriorHit) {
+        const d1 = (vx - bx) * (ay - by) - (ax - bx) * (vy - by);
+        const d2 = (vx - cx) * (by - cy) - (bx - cx) * (vy - cy);
+        const d3 = (vx - ax) * (cy - ay) - (cx - ax) * (vy - ay);
+        const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+        const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+        if (!(hasNeg && hasPos)) {
+          return el.id;
+        }
       }
     }
   }
