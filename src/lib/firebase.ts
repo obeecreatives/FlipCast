@@ -10,6 +10,7 @@ import {
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CanvasElement, MAX_ELEMENTS_PER_PAGE } from '../types/whiteboard';
+import { roundCoord } from './strokeSmoothing';
 
 const app = initializeApp(firebaseConfig);
 
@@ -112,14 +113,14 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         const step = Math.ceil(pts.length / 1600) * 2;
         const sampled: number[] = [];
         for (let i = 0; i < pts.length; i += step) {
-          sampled.push(Math.round(pts[i]), Math.round(pts[i + 1] ?? pts[pts.length - 1]));
+          sampled.push(roundCoord(pts[i]), roundCoord(pts[i + 1] ?? pts[pts.length - 1]));
         }
         if (pts.length >= 2) {
-          sampled.push(Math.round(pts[pts.length - 2]), Math.round(pts[pts.length - 1]));
+          sampled.push(roundCoord(pts[pts.length - 2]), roundCoord(pts[pts.length - 1]));
         }
         pts = sampled;
       } else {
-        pts = pts.map((n) => Math.round(n));
+        pts = pts.map((n) => roundCoord(n));
       }
       return {
         id: el.id.slice(0, 64),

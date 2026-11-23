@@ -9,6 +9,7 @@ import {
   VIRTUAL_HEIGHT,
   VIRTUAL_WIDTH,
 } from '../types/whiteboard';
+import { roundCoord } from './strokeSmoothing';
 
 export function drawPaperBackground(
   ctx: CanvasRenderingContext2D,
@@ -126,12 +127,30 @@ function drawStroke(
   if (pts.length === 4) {
     ctx.lineTo(pts[2], pts[3]);
   } else {
-    for (let i = 2; i < pts.length - 2; i += 2) {
-      const xc = (pts[i] + pts[i + 2]) / 2;
-      const yc = (pts[i + 1] + pts[i + 3]) / 2;
-      ctx.quadraticCurveTo(pts[i], pts[i + 1], xc, yc);
+    // Catmull-Rom spline converted to Cubic Bezier segments passing smoothly through every control point
+    const pointCount = Math.floor(pts.length / 2);
+    for (let i = 0; i < pointCount - 1; i++) {
+      const pPrevIdx = Math.max(0, i - 1) * 2;
+      const p0Idx = i * 2;
+      const p1Idx = (i + 1) * 2;
+      const pNextIdx = Math.min(pointCount - 1, i + 2) * 2;
+
+      const pPrevX = pts[pPrevIdx];
+      const pPrevY = pts[pPrevIdx + 1];
+      const p0X = pts[p0Idx];
+      const p0Y = pts[p0Idx + 1];
+      const p1X = pts[p1Idx];
+      const p1Y = pts[p1Idx + 1];
+      const pNextX = pts[pNextIdx];
+      const pNextY = pts[pNextIdx + 1];
+
+      const cp1x = p0X + (p1X - pPrevX) / 6;
+      const cp1y = p0Y + (p1Y - pPrevY) / 6;
+      const cp2x = p1X - (pNextX - p0X) / 6;
+      const cp2y = p1Y - (pNextY - p0Y) / 6;
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p1X, p1Y);
     }
-    ctx.lineTo(pts[pts.length - 2], pts[pts.length - 1]);
   }
 
   ctx.stroke();
@@ -487,8 +506,8 @@ export function translateElement(
   if (el.type === 'pen' || el.type === 'highlighter') {
     const nextPts = new Array<number>(el.points.length);
     for (let i = 0; i < el.points.length; i += 2) {
-      nextPts[i] = Math.round(el.points[i] + clampedDx);
-      nextPts[i + 1] = Math.round(el.points[i + 1] + clampedDy);
+      nextPts[i] = roundCoord(el.points[i] + clampedDx);
+      nextPts[i + 1] = roundCoord(el.points[i + 1] + clampedDy);
     }
     return { ...el, points: nextPts };
   }

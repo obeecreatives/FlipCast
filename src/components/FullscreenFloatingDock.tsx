@@ -11,6 +11,7 @@ import {
   Plus,
   QrCode,
   Redo2,
+  Sparkles,
   Undo2,
 } from 'lucide-react';
 import { FlipchartPage } from '../types/whiteboard';
@@ -25,6 +26,8 @@ interface FullscreenFloatingDockProps {
   activePageId: string;
   canUndo: boolean;
   canRedo: boolean;
+  smoothWriting: boolean;
+  onToggleSmoothWriting: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onSelectPage: (pageId: string) => void;
@@ -48,6 +51,8 @@ export const FullscreenFloatingDock: React.FC<FullscreenFloatingDockProps> = ({
   activePageId,
   canUndo,
   canRedo,
+  smoothWriting,
+  onToggleSmoothWriting,
   onUndo,
   onRedo,
   onSelectPage,
@@ -175,6 +180,20 @@ export const FullscreenFloatingDock: React.FC<FullscreenFloatingDockProps> = ({
                 className="w-[38px] h-[38px] rounded-xl inline-flex items-center justify-center text-slate-100 hover:bg-slate-800 active:scale-95 disabled:opacity-30 disabled:hover:bg-transparent transition-all cursor-pointer disabled:cursor-not-allowed"
               >
                 <Redo2 className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={onToggleSmoothWriting}
+                aria-pressed={smoothWriting}
+                title={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
+                aria-label={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
+                className={`w-[38px] h-[38px] rounded-xl inline-flex items-center justify-center transition-all active:scale-95 cursor-pointer ${
+                  smoothWriting
+                    ? 'bg-teal-600/25 text-teal-300 ring-1 ring-teal-500/50 hover:bg-teal-600/35'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                }`}
+              >
+                <Sparkles className="w-4 h-4" />
               </button>
             </div>
             <span className="w-px h-5 bg-slate-700 shrink-0" aria-hidden="true" />

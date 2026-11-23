@@ -7,6 +7,11 @@ import {
   translateElement,
 } from '../lib/canvasRenderer';
 import {
+  appendFreehandPoint,
+  finalizeFreehandPoints,
+  roundCoord,
+} from '../lib/strokeSmoothing';
+import {
   CanvasElement,
   createId,
   FontSizeKey,
@@ -33,6 +38,7 @@ interface WhiteboardCanvasProps {
   stickyColor?: string;
   strokeSize: StrokeSizeKey;
   fontSize: FontSizeKey;
+  smoothWriting?: boolean;
   readOnly: boolean;
   onAddElement: (el: CanvasElement) => void;
   onUpdateElement: (el: CanvasElement) => void;
@@ -72,6 +78,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   stickyColor = STICKY_COLORS[0].bg,
   strokeSize,
   fontSize,
+  smoothWriting = true,
   readOnly,
   onAddElement,
   onUpdateElement,
@@ -508,7 +515,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         color,
         size: activeTool === 'pen' ? widthCfg.pen : widthCfg.highlighter,
         opacity: activeTool === 'highlighter' ? 0.36 : 1,
-        points: [Math.round(pt.x), Math.round(pt.y)],
+        points: [roundCoord(pt.x), roundCoord(pt.y)],
       };
       draftElementRef.current = stroke;
       setLiveElement(stroke);
@@ -587,22 +594,22 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (draft.type === 'pen' || draft.type === 'highlighter') {
       const nativeEvt = e.nativeEvent as PointerEvent;
-      const coalesced =
+      const rawCoalesced =
         typeof nativeEvt.getCoalescedEvents === 'function'
           ? nativeEvt.getCoalescedEvents()
-          : [nativeEvt];
+          : null;
+      const events = rawCoalesced && rawCoalesced.length > 0 ? rawCoalesced : [nativeEvt];
       const nextPts = [...draft.points];
+      let added = false;
 
-      for (const ce of coalesced) {
+      for (const ce of events) {
         const cPt = toVirtualCoords(ce.clientX, ce.clientY);
-        const rx = Math.round(cPt.x);
-        const ry = Math.round(cPt.y);
-        const lastX = nextPts[nextPts.length - 2];
-        const lastY = nextPts[nextPts.length - 1];
-        if (Math.hypot(rx - lastX, ry - lastY) >= 2.5) {
-          nextPts.push(rx, ry);
+        if (appendFreehandPoint(nextPts, cPt.x, cPt.y, smoothWriting)) {
+          added = true;
         }
       }
+
+      if (!added) return;
 
       const updated: StrokeElement = { ...draft, points: nextPts };
       draftElementRef.current = updated;
@@ -682,6 +689,22 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     onEmitLiveStroke(null, true);
 
     if (!draft) return;
+
+    if (draft.type === 'pen' || draft.type === 'highlighter') {
+      const captureEnd = e.type === 'pointerup';
+      const endPt = captureEnd ? toVirtualCoords(e.clientX, e.clientY) : null;
+      const finalPoints = finalizeFreehandPoints(
+        draft.points,
+        endPt ? endPt.x : null,
+        endPt ? endPt.y : null,
+        smoothWriting
+      );
+      onAddElement({
+        ...draft,
+        points: finalPoints,
+      });
+      return;
+    }
 
     if (
       draft.type === 'line' ||

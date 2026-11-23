@@ -14,6 +14,7 @@ import {
   Pin,
   PinOff,
   Rows3,
+  Sparkles,
   Square,
   StickyNote,
   Trash2,
@@ -44,6 +45,8 @@ interface DrawingToolbarProps {
   onSelectFontSize: (size: FontSizeKey) => void;
   background: PaperBackground;
   onSelectBackground: (bg: PaperBackground) => void;
+  smoothWriting: boolean;
+  onToggleSmoothWriting: () => void;
   onClearPage: () => void;
   onOpenTemplates: () => void;
   collapsed: boolean;
@@ -91,6 +94,8 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onSelectFontSize,
   background,
   onSelectBackground,
+  smoothWriting,
+  onToggleSmoothWriting,
   onClearPage,
   onOpenTemplates,
   collapsed,
@@ -117,21 +122,38 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   // COLLAPSED STATE: Floating sleek left-edge tab so canvas gets 100% width
   if (collapsed) {
     return (
-      <div className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-1/2 -translate-y-1/2 z-30">
+      <div className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-1/2 -translate-y-1/2 z-30 flex flex-col items-center gap-1.5 py-2 px-1.5 rounded-2xl bg-white/95 border border-slate-200/90 shadow-lg">
         <button
           type="button"
           onClick={onToggleCollapse}
           title="Buka Mini Sidebar Alat Tulis"
           aria-label="Buka Sidebar Alat Tulis"
-          className="min-w-[44px] py-3 px-2 rounded-2xl bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-lg flex flex-col items-center gap-2 text-slate-700 transition-all active:scale-95"
+          className="w-8 py-1.5 rounded-xl hover:bg-slate-100 flex flex-col items-center gap-2 text-slate-700 transition-all active:scale-95"
         >
           <PanelLeftOpen className="w-4 h-4 text-teal-600" />
-          <span className="w-6 h-px bg-slate-200" aria-hidden="true" />
+          <span className="w-5 h-px bg-slate-200" aria-hidden="true" />
           <ActiveToolIcon className="w-4 h-4 text-slate-900" />
           <span
             className="w-4 h-4 rounded-full border border-slate-300 block"
             style={{ backgroundColor: activeSwatchColor }}
           />
+        </button>
+
+        <span className="w-5 h-px bg-slate-200" aria-hidden="true" />
+
+        <button
+          type="button"
+          onClick={onToggleSmoothWriting}
+          aria-pressed={smoothWriting}
+          title={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
+          aria-label={`Haluskan Tulisan ${smoothWriting ? 'Aktif' : 'Mati'}`}
+          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all active:scale-95 ${
+            smoothWriting
+              ? 'bg-teal-600 text-white shadow-xs'
+              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -339,6 +361,40 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
             </div>
           </div>
         )}
+
+        <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
+
+        {/* Auto Handwriting Smoothing Toggle */}
+        <button
+          type="button"
+          onClick={onToggleSmoothWriting}
+          aria-pressed={smoothWriting}
+          title={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'}) — Menghaluskan goresan spidol & stabilo secara otomatis`}
+          aria-label={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
+          className={`w-full px-1.5 py-2 rounded-xl border text-center transition-all active:scale-95 flex flex-col items-center gap-1 ${
+            smoothWriting
+              ? 'bg-teal-50 border-teal-200 text-teal-900 hover:bg-teal-100/70'
+              : 'bg-slate-50 border-slate-200/80 text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold leading-none">
+            <Sparkles
+              className={`w-3 h-3 shrink-0 ${
+                smoothWriting ? 'text-teal-600' : 'text-slate-400'
+              }`}
+            />
+            <span>Haluskan</span>
+          </span>
+          <span
+            className={`px-1.5 py-0.5 rounded-md text-[9px] font-extrabold tracking-wider leading-none ${
+              smoothWriting
+                ? 'bg-teal-600 text-white'
+                : 'bg-slate-200 text-slate-600'
+            }`}
+          >
+            {smoothWriting ? 'AKTIF' : 'MATI'}
+          </span>
+        </button>
 
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 
