@@ -11,6 +11,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PenTool,
+  Pin,
+  PinOff,
   Rows3,
   Square,
   StickyNote,
@@ -47,6 +49,9 @@ interface DrawingToolbarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
   compact?: boolean;
+  floatingMode?: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
 }
 
 const TOOLS: {
@@ -90,6 +95,9 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onOpenTemplates,
   collapsed,
   onToggleCollapse,
+  floatingMode = false,
+  pinned = false,
+  onTogglePin,
 }) => {
   const [confirmClear, setConfirmClear] = useState(false);
 
@@ -129,26 +137,44 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
     );
   }
 
-  // EXPANDED STATE: Compact 2-column vertical Mini-Sidebar on the left
+  // EXPANDED STATE: Compact 2-column vertical Mini-Sidebar on the left (or floating overlay in Fullscreen)
   return (
     <aside
       aria-label="Mini Sidebar Alat Tulis"
-      className="shrink-0 w-[100px] sm:w-[110px] h-full max-h-full bg-white border border-slate-200/90 rounded-2xl shadow-sm flex flex-col overflow-hidden z-20"
+      className={`shrink-0 w-[100px] sm:w-[110px] h-full max-h-full bg-white/95 sm:backdrop-blur-md border border-slate-200/90 rounded-2xl ${
+        floatingMode ? 'shadow-2xl' : 'shadow-sm'
+      } flex flex-col overflow-hidden z-20`}
     >
-      {/* Mini-Sidebar Header with Collapse Button */}
+      {/* Mini-Sidebar Header with Pin (Floating Mode) or Collapse Button */}
       <div className="shrink-0 flex items-center justify-between px-2.5 py-1.5 border-b border-slate-100">
         <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
           Alat
         </span>
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          title="Ciutkan Sidebar Alat"
-          aria-label="Ciutkan Sidebar"
-          className="min-w-[36px] min-h-[36px] rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
-        >
-          <PanelLeftClose className="w-4 h-4" />
-        </button>
+        {floatingMode && onTogglePin ? (
+          <button
+            type="button"
+            onClick={onTogglePin}
+            title={pinned ? 'Lepas Pin (sembunyi otomatis)' : 'Pin Panel Alat agar tetap tampil'}
+            aria-label={pinned ? 'Lepas Pin Panel Alat' : 'Pin Panel Alat'}
+            className={`min-w-[34px] min-h-[34px] rounded-xl flex items-center justify-center transition-colors ${
+              pinned
+                ? 'bg-teal-50 text-teal-700 ring-1 ring-teal-200'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+          >
+            {pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Ciutkan Sidebar Alat"
+            aria-label="Ciutkan Sidebar"
+            className="min-w-[36px] min-h-[36px] rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Scrollable Vertical Rail (Fits without scrolling on Desktop/Tablet, scrolls cleanly on short Phone Landscape) */}

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
-  ChevronUp,
   Download,
   Edit3,
   Eye,
@@ -23,6 +22,7 @@ import {
 import { ConnectModal } from './components/ConnectModal';
 import { DrawingToolbar } from './components/DrawingToolbar';
 import { FlipchartBar } from './components/FlipchartBar';
+import { FullscreenFloatingDock } from './components/FullscreenFloatingDock';
 import { OfflineIndicator, PWAInstallModal } from './components/PWAWidgets';
 import { TemplateDrawer } from './components/TemplateDrawer';
 import { WhiteboardCanvas } from './components/WhiteboardCanvas';
@@ -53,6 +53,14 @@ export default function App() {
     typeof window !== 'undefined' ? window.innerWidth < 768 : false
   );
   const [chromeCollapsed, setChromeCollapsed] = useState(false);
+  const [leftFloatOpen, setLeftFloatOpen] = useState(false);
+  const [bottomFloatOpen, setBottomFloatOpen] = useState(false);
+  const [leftFloatPinned, setLeftFloatPinned] = useState(false);
+  const [bottomFloatPinned, setBottomFloatPinned] = useState(false);
+  const [bottomPopoverOpen, setBottomPopoverOpen] = useState(false);
+  const [isTouchPrimary, setIsTouchPrimary] = useState<boolean>(() =>
+    typeof window !== 'undefined' && Boolean(window.matchMedia?.('(pointer: coarse)').matches)
+  );
   const [extendControlsVisible, setExtendControlsVisible] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [viewport, setViewport] = useState(() => ({
@@ -62,6 +70,12 @@ export default function App() {
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
+  const isPointerDrawingRef = useRef(false);
+  const leftHoverInsideRef = useRef(false);
+  const bottomHoverInsideRef = useRef(false);
+  const leftHideTimerRef = useRef<number | null>(null);
+  const bottomHideTimerRef = useRef<number | null>(null);
+  const prevImmersiveRef = useRef(false);
   const isLandscape = viewport.width > viewport.height;
   const isShortLandscape = isLandscape && viewport.height <= 560;
 
@@ -140,8 +154,11 @@ export default function App() {
       }
     } catch {
       // Fallback visual fullscreen toggle when blocked by iframe or iOS Safari
-      setIsFullscreen((prev) => !prev);
-      setChromeCollapsed((prev) => !prev);
+      setIsFullscreen((prev) => {
+        const next = !prev;
+        setChromeCollapsed(next);
+        return next;
+      });
     }
   }, [unlockOrientationSafe]);
 
@@ -245,8 +262,155 @@ export default function App() {
 
   const showToast = useCallback((msg: string) => {
     setExportNotice(msg);
-    setTimeout(() => setExportNotice(null), 2600);
+    setTimeout(() => setExportNotice(null), 2800);
   }, []);
+
+  // Track coarse pointer (touch devices) so subtle edge handles only appear on touchscreens
+  useEffect(() => {
+    const mq = window.matchMedia?.('(pointer: coarse)');
+    if (!mq) return;
+    const update = () => setIsTouchPrimary(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
+
+  // Fullscreen / Focus auto-hide floating overlays (Left Edge = Tools, Bottom Edge = Quick Dock) + Drawing Guard
+  const clearLeftHideTimer = useCallback(() => {
+    if (leftHideTimerRef.current !== null) {
+      window.clearTimeout(leftHideTimerRef.current);
+      leftHideTimerRef.current = null;
+    }
+  }, []);
+
+  const clearBottomHideTimer = useCallback(() => {
+    if (bottomHideTimerRef.current !== null) {
+      window.clearTimeout(bottomHideTimerRef.current);
+      bottomHideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleLeftHide = useCallback(() => {
+    clearLeftHideTimer();
+    if (leftFloatPinned || leftHoverInsideRef.current || isTemplatesOpen) return;
+    leftHideTimerRef.current = window.setTimeout(() => {
+      if (!leftHoverInsideRef.current) {
+        setLeftFloatOpen(false);
+      }
+    }, 380);
+  }, [clearLeftHideTimer, leftFloatPinned, isTemplatesOpen]);
+
+  const scheduleBottomHide = useCallback(() => {
+    clearBottomHideTimer();
+    if (bottomFloatPinned || bottomHoverInsideRef.current || bottomPopoverOpen || isConnectOpen) {
+      return;
+    }
+    bottomHideTimerRef.current = window.setTimeout(() => {
+      if (!bottomHoverInsideRef.current && !bottomPopoverOpen) {
+        setBottomFloatOpen(false);
+      }
+    }, 380);
+  }, [clearBottomHideTimer, bottomFloatPinned, bottomPopoverOpen, isConnectOpen]);
+
+  // Reset floating overlays & show brief discoverability hint when entering Fullscreen/Focus mode
+  useEffect(() => {
+    if (chromeCollapsed && !prevImmersiveRef.current) {
+      setLeftFloatOpen(false);
+      setBottomFloatOpen(false);
+      showToast(
+        isTouchPrimary
+          ? 'Mode Layar Penuh — Ketuk garis tipis di tepi kiri (alat) atau bawah (menu)'
+          : 'Mode Fullscreen — Arahkan kursor ke tepi kiri (alat) atau bawah (menu), tekan F/Esc untuk keluar'
+      );
+    } else if (!chromeCollapsed && prevImmersiveRef.current) {
+      clearLeftHideTimer();
+      clearBottomHideTimer();
+      setLeftFloatOpen(false);
+      setBottomFloatOpen(false);
+      setLeftFloatPinned(false);
+      setBottomFloatPinned(false);
+      setBottomPopoverOpen(false);
+    }
+    prevImmersiveRef.current = chromeCollapsed;
+  }, [chromeCollapsed, isTouchPrimary, showToast, clearLeftHideTimer, clearBottomHideTimer]);
+
+  useEffect(() => {
+    if (!chromeCollapsed) return;
+
+    const canShowLeftTools = wb.viewMode === 'tablet' || wb.laptopCanEdit;
+
+    const onPointerDown = (e: PointerEvent) => {
+      isPointerDrawingRef.current = true;
+      const target = e.target as HTMLElement | null;
+      const insideOverlay = Boolean(target?.closest('[data-floating-overlay]'));
+      if (!insideOverlay && !isConnectOpen && !isTemplatesOpen) {
+        if (!leftFloatPinned) {
+          clearLeftHideTimer();
+          setLeftFloatOpen(false);
+        }
+        if (!bottomFloatPinned && !bottomPopoverOpen) {
+          clearBottomHideTimer();
+          setBottomFloatOpen(false);
+        }
+      }
+    };
+
+    const onPointerUpOrCancel = () => {
+      isPointerDrawingRef.current = false;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      // Drawing Guard: never trigger edge menus while actively drawing/dragging
+      if (isPointerDrawingRef.current || e.buttons > 0) return;
+      if (e.pointerType === 'touch') return;
+
+      const x = e.clientX;
+      const y = e.clientY;
+      const vh = window.innerHeight;
+
+      if (canShowLeftTools) {
+        if (x <= 22) {
+          clearLeftHideTimer();
+          setLeftFloatOpen(true);
+        } else if (x > 148 && !leftHoverInsideRef.current && !leftFloatPinned) {
+          scheduleLeftHide();
+        }
+      }
+
+      if (y >= vh - 24) {
+        clearBottomHideTimer();
+        setBottomFloatOpen(true);
+      } else if (y < vh - 112 && !bottomHoverInsideRef.current && !bottomFloatPinned && !bottomPopoverOpen) {
+        scheduleBottomHide();
+      }
+    };
+
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerup', onPointerUpOrCancel, true);
+    window.addEventListener('pointercancel', onPointerUpOrCancel, true);
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointerup', onPointerUpOrCancel, true);
+      window.removeEventListener('pointercancel', onPointerUpOrCancel, true);
+      window.removeEventListener('pointermove', onPointerMove);
+      clearLeftHideTimer();
+      clearBottomHideTimer();
+    };
+  }, [
+    chromeCollapsed,
+    wb.viewMode,
+    wb.laptopCanEdit,
+    leftFloatPinned,
+    bottomFloatPinned,
+    bottomPopoverOpen,
+    isConnectOpen,
+    isTemplatesOpen,
+    clearLeftHideTimer,
+    clearBottomHideTimer,
+    scheduleLeftHide,
+    scheduleBottomHide,
+  ]);
 
   // Notify immediately when Tablet/HP receives active board state from PC/Laptop Host
   useEffect(() => {
@@ -948,62 +1112,115 @@ export default function App() {
           />
         )}
 
-        {/* Fullscreen / Collapsed Chrome Floating Controls (Includes Icon-Only Undo/Redo when editing) */}
-        {(isFullscreen || chromeCollapsed) && (
-          <div className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-right))] z-40 flex items-center gap-2">
-            {chromeCollapsed && !isCanvasReadOnly && (
-              <div className="inline-flex items-center bg-slate-900/95 border border-slate-700 rounded-xl p-0.5 shadow-lg sm:backdrop-blur-sm">
-                <button
-                  type="button"
-                  onClick={wb.undo}
-                  disabled={!wb.canUndo}
-                  title="Urungkan (Ctrl+Z)"
-                  aria-label="Undo"
-                  className="w-[40px] h-[40px] rounded-lg inline-flex items-center justify-center text-white hover:bg-slate-800 disabled:opacity-35 transition-colors"
-                >
-                  <Undo2 className="w-4 h-4" />
-                </button>
-                <span className="w-px h-4 bg-slate-700" aria-hidden="true" />
-                <button
-                  type="button"
-                  onClick={wb.redo}
-                  disabled={!wb.canRedo}
-                  title="Ulangi (Ctrl+Y)"
-                  aria-label="Redo"
-                  className="w-[40px] h-[40px] rounded-lg inline-flex items-center justify-center text-white hover:bg-slate-800 disabled:opacity-35 transition-colors"
-                >
-                  <Redo2 className="w-4 h-4" />
-                </button>
+        {/* FULLSCREEN / FOCUS MODE: Auto-Hide Edge-Hover Floating Overlays (0% permanent canvas overlap!) */}
+        {chromeCollapsed && (
+          <>
+            {/* Left Floating Drawing Toolbar (Revealed on Left-Edge Hover, Pinned, or Touch Edge Tap) */}
+            {!isCanvasReadOnly && (
+              <div
+                data-floating-overlay="left"
+                onMouseEnter={() => {
+                  leftHoverInsideRef.current = true;
+                  clearLeftHideTimer();
+                  setLeftFloatOpen(true);
+                }}
+                onMouseLeave={() => {
+                  leftHoverInsideRef.current = false;
+                  scheduleLeftHide();
+                }}
+                className={`fixed left-[max(0.75rem,env(safe-area-inset-left))] top-1/2 -translate-y-1/2 z-40 h-[min(640px,calc(100dvh-2rem))] flex transition-all duration-200 ease-out ${
+                  leftFloatOpen || leftFloatPinned
+                    ? 'translate-x-0 opacity-100 pointer-events-auto'
+                    : '-translate-x-[130%] opacity-0 pointer-events-none'
+                }`}
+              >
+                <DrawingToolbar
+                  activeTool={activeTool}
+                  onSelectTool={setActiveTool}
+                  color={color}
+                  onSelectColor={setColor}
+                  stickyColor={stickyColor}
+                  onSelectStickyColor={setStickyColor}
+                  strokeSize={strokeSize}
+                  onSelectStrokeSize={setStrokeSize}
+                  fontSize={fontSize}
+                  onSelectFontSize={setFontSize}
+                  background={wb.activePage?.background || 'white'}
+                  onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
+                  onClearPage={wb.clearActivePage}
+                  onOpenTemplates={() => setIsTemplatesOpen(true)}
+                  collapsed={false}
+                  onToggleCollapse={() => setLeftFloatOpen(false)}
+                  compact={isTabletMode}
+                  floatingMode={true}
+                  pinned={leftFloatPinned}
+                  onTogglePin={() => setLeftFloatPinned((p) => !p)}
+                />
               </div>
             )}
-            <button
-              type="button"
-              onClick={() => setChromeCollapsed((c) => !c)}
-              className="min-h-[44px] px-3.5 rounded-xl bg-slate-900/95 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg border border-slate-700 sm:backdrop-blur-sm"
-            >
-              {chromeCollapsed ? (
-                <>
-                  <ChevronUp className="w-4 h-4" />
-                  Tampilkan Toolbar
-                </>
-              ) : (
-                <>
-                  <ChevronDown className="w-4 h-4" />
-                  Sembunyikan Toolbar
-                </>
-              )}
-            </button>
-            {isFullscreen && chromeCollapsed && (
+
+            {/* Bottom Floating Quick Dock (Undo/Redo + Flipchart + QR + PDF + Pin + Exit) */}
+            <FullscreenFloatingDock
+              visible={bottomFloatOpen || bottomFloatPinned || bottomPopoverOpen}
+              pinned={bottomFloatPinned}
+              isFullscreen={isFullscreen}
+              readOnly={isCanvasReadOnly}
+              roomId={wb.roomId}
+              pages={wb.pages}
+              activePageId={wb.activePageId}
+              canUndo={wb.canUndo}
+              canRedo={wb.canRedo}
+              onUndo={wb.undo}
+              onRedo={wb.redo}
+              onSelectPage={(id) => void wb.selectPage(id)}
+              onAddPage={() => void wb.addPage()}
+              onOpenConnect={() => setIsConnectOpen(true)}
+              onExportPDF={handleExportPDF}
+              onTogglePin={() => setBottomFloatPinned((p) => !p)}
+              onExit={() => {
+                if (isFullscreen) {
+                  void toggleFullscreen();
+                } else {
+                  setChromeCollapsed(false);
+                }
+              }}
+              onPointerEnter={() => {
+                bottomHoverInsideRef.current = true;
+                clearBottomHideTimer();
+                setBottomFloatOpen(true);
+              }}
+              onPointerLeave={() => {
+                bottomHoverInsideRef.current = false;
+                scheduleBottomHide();
+              }}
+              onPopoverOpenChange={setBottomPopoverOpen}
+            />
+
+            {/* Subtle Edge Tap Handles ONLY for Touchscreens (Tablet/HP without mouse hover) */}
+            {isTouchPrimary && !isCanvasReadOnly && !(leftFloatOpen || leftFloatPinned) && (
               <button
                 type="button"
-                onClick={toggleFullscreen}
-                className="min-h-[44px] px-3 rounded-xl bg-slate-900/95 hover:bg-slate-800 text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 shadow-lg border border-slate-700 sm:backdrop-blur-sm"
+                data-floating-overlay="left-handle"
+                onClick={() => setLeftFloatOpen(true)}
+                aria-label="Tampilkan Alat Tulis"
+                className="fixed left-0 top-1/2 -translate-y-1/2 z-30 pl-1 pr-3 py-6 flex items-center justify-center"
               >
-                <Minimize2 className="w-4 h-4" />
-                Keluar
+                <span className="w-1 h-14 rounded-full bg-slate-400/55 shadow-xs" />
               </button>
             )}
-          </div>
+
+            {isTouchPrimary && !(bottomFloatOpen || bottomFloatPinned || bottomPopoverOpen) && (
+              <button
+                type="button"
+                data-floating-overlay="bottom-handle"
+                onClick={() => setBottomFloatOpen(true)}
+                aria-label="Tampilkan Dock Kontrol"
+                className="fixed bottom-0 left-1/2 -translate-x-1/2 z-30 pb-1 pt-3 px-6 flex items-center justify-center"
+              >
+                <span className="h-1 w-16 rounded-full bg-slate-400/55 shadow-xs" />
+              </button>
+            )}
+          </>
         )}
 
         {/* Export / Draft / Rotation / Room Confirmation Toast */}
