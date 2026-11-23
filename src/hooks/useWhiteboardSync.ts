@@ -27,6 +27,7 @@ import {
   signInWithGoogleRedirect,
   signOutGoogle,
 } from '../lib/firebase';
+import { P2PConnectionState, RoomPeerBridge } from '../lib/peerSync';
 import {
   BUILTIN_TEMPLATES,
   CanvasElement,
@@ -245,6 +246,10 @@ export function useWhiteboardSync() {
   const [syncNonce, setSyncNonce] = useState<number>(0);
   const [cloudState, setCloudState] = useState<CloudSyncState>('connecting');
   const [cloudMessage, setCloudMessage] = useState<string>('Menyiapkan koneksi cloud otomatis...');
+  const [p2pState, setP2pState] = useState<P2PConnectionState>('initializing');
+  const [p2pPeerCount, setP2pPeerCount] = useState<number>(0);
+  const [p2pMessage, setP2pMessage] = useState<string>('Menyiapkan koneksi langsung...');
+  const [lastHostSyncedAt, setLastHostSyncedAt] = useState<number>(0);
   const [roomOwnerId, setRoomOwnerId] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<QuickTemplate[]>(() =>
     loadCustomTemplatesLocal()
@@ -268,7 +273,9 @@ export function useWhiteboardSync() {
 
   const anonAttemptedRef = useRef<boolean>(false);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const peerBridgeRef = useRef<RoomPeerBridge | null>(null);
   const lastLiveStrokePushRef = useRef<number>(0);
+  const lastPeerLiveStrokePushRef = useRef<number>(0);
 
   const pulseRemoteSignal = useCallback(() => {
     setIsRemoteTransmitting(true);
@@ -416,14 +423,97 @@ export function useWhiteboardSync() {
     (snapshot: PersistedRoomLocal) => {
       if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
       channelRef.current?.postMessage({
-        senderId: clientInstanceId.current,
+        senderId: boardDeviceIdRef.current,
         type: 'state',
         roomId,
         payload: snapshot,
       } satisfies BroadcastPacket);
+      peerBridgeRef.current?.sendState(snapshot);
     },
     [roomId, viewMode]
   );
+
+  // Direct WebRTC P2P Real-Time Bridge (Zero email, zero login, works across Wi-Fi & 4G/5G)
+  // PC/Laptop ('projector') acts as Host; Tablet/HP ('tablet') and remote Extend ('extend') connect directly to Host.
+  useEffect(() => {
+    const role: 'host' | 'client' = viewMode === 'projector' ? 'host' : 'client';
+    const bridge = new RoomPeerBridge({
+      roomId,
+      role,
+      deviceId: boardDeviceIdRef.current,
+      getSnapshot: () => ({
+        roomId,
+        title: roomTitleRef.current,
+        activePageId: activePageIdRef.current,
+        pages: pagesRef.current,
+        updatedAtMs: Date.now(),
+      }),
+      onStateChange: (nextState, count, detail) => {
+        setP2pState(nextState);
+        setP2pPeerCount(count);
+        setP2pMessage(detail);
+      },
+      onReceiveHostSync: (incoming) => {
+        // Initial handshake from PC/Laptop Host always loads the active board on Tablet/HP immediately
+        if (!incoming || !Array.isArray(incoming.pages) || incoming.pages.length === 0) return;
+        setPages(incoming.pages);
+        setActivePageId(incoming.activePageId || incoming.pages[0].pageId);
+        setRoomTitle(incoming.title || 'Sesi Papan Tulis');
+        setRemoteLiveElement(null);
+        setLastHostSyncedAt(Date.now());
+        const saved = saveToLocal(incoming.pages, incoming.activePageId || incoming.pages[0].pageId, {
+          title: incoming.title,
+        });
+        channelRef.current?.postMessage({
+          senderId: boardDeviceIdRef.current,
+          type: 'state',
+          roomId,
+          payload: saved,
+        } satisfies BroadcastPacket);
+      },
+      onReceiveState: (incoming) => {
+        if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+        if (!incoming || !Array.isArray(incoming.pages) || incoming.pages.length === 0) return;
+        pulseRemoteSignal();
+        setPages(incoming.pages);
+        setActivePageId(incoming.activePageId || incoming.pages[0].pageId);
+        setRoomTitle(incoming.title || 'Sesi Papan Tulis');
+        setRemoteLiveElement(null);
+        const saved = saveToLocal(incoming.pages, incoming.activePageId || incoming.pages[0].pageId, {
+          title: incoming.title,
+        });
+        // Forward immediately to same-PC Extend window (Monitor 2) via BroadcastChannel
+        channelRef.current?.postMessage({
+          senderId: boardDeviceIdRef.current,
+          type: 'state',
+          roomId,
+          payload: saved,
+        } satisfies BroadcastPacket);
+      },
+      onReceiveLiveStroke: (pageId, element) => {
+        if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
+        if (element) {
+          pulseRemoteSignal();
+        }
+        setRemoteLivePageId(pageId);
+        setRemoteLiveElement(element);
+        channelRef.current?.postMessage({
+          senderId: boardDeviceIdRef.current,
+          type: 'liveStroke',
+          roomId,
+          payload: { pageId, element },
+        } satisfies BroadcastPacket);
+      },
+    });
+
+    peerBridgeRef.current = bridge;
+    return () => {
+      bridge.destroy();
+      if (peerBridgeRef.current === bridge) {
+        peerBridgeRef.current = null;
+      }
+    };
+  }, [roomId, viewMode, syncNonce, saveToLocal, pulseRemoteSignal]);
 
   // Load user's private custom templates from Firestore when authenticated (anonymous or Google)
   useEffect(() => {
@@ -806,25 +896,30 @@ export function useWhiteboardSync() {
     [canPushCloud, roomId]
   );
 
-  // Stream live stroke while drawing (throttled ~70ms for fluid real-time projector display)
+  // Stream live stroke while drawing (~35ms on Direct P2P / BroadcastChannel, ~70ms on Firestore)
   const emitLiveStroke = useCallback(
     (element: CanvasElement | null, force = false) => {
       if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
       const now = Date.now();
-      if (!force && element !== null && now - lastLiveStrokePushRef.current < 70) {
-        return;
-      }
-      lastLiveStrokePushRef.current = now;
-
       const pid = activePageIdRef.current;
-      channelRef.current?.postMessage({
-        senderId: boardDeviceIdRef.current,
-        type: 'liveStroke',
-        roomId,
-        payload: { pageId: pid, element },
-      } satisfies BroadcastPacket);
 
-      if (canPushCloud() && userRef.current) {
+      if (force || element === null || now - lastPeerLiveStrokePushRef.current >= 35) {
+        lastPeerLiveStrokePushRef.current = now;
+        channelRef.current?.postMessage({
+          senderId: boardDeviceIdRef.current,
+          type: 'liveStroke',
+          roomId,
+          payload: { pageId: pid, element },
+        } satisfies BroadcastPacket);
+        peerBridgeRef.current?.sendLiveStroke(pid, element);
+      }
+
+      if (
+        canPushCloud() &&
+        userRef.current &&
+        (force || element === null || now - lastLiveStrokePushRef.current >= 70)
+      ) {
+        lastLiveStrokePushRef.current = now;
         const sanitized = element ? sanitizeElementsForFirestore([element])[0] : {};
         setDoc(doc(db, 'rooms', roomId, 'liveStroke', 'current'), {
           roomId,
@@ -1249,6 +1344,7 @@ export function useWhiteboardSync() {
       roomId,
       payload: snapshot,
     } satisfies BroadcastPacket);
+    peerBridgeRef.current?.sendState(snapshot);
 
     if (userRef.current && cloudStateRef.current === 'synced') {
       try {
@@ -1290,7 +1386,8 @@ export function useWhiteboardSync() {
 
   const switchRoom = useCallback(
     (
-      nextRawRoomId: string
+      nextRawRoomId: string,
+      nextViewMode?: ViewMode
     ): { ok: boolean; roomId?: string; error?: string; needsSignIn?: boolean } => {
       const normalized = nextRawRoomId.trim().replace(/\s+/g, '-');
       const cleaned = sanitizeId(normalized, 32).toUpperCase();
@@ -1302,6 +1399,13 @@ export function useWhiteboardSync() {
       }
       const loaded = loadLocalRoom(cleaned);
       setRoomId(cleaned);
+      if (nextViewMode) {
+        setViewMode(nextViewMode);
+        if (nextViewMode === 'tablet') {
+          setIsLiveBroadcast(true);
+          isLiveBroadcastRef.current = true;
+        }
+      }
       setRoomTitle(loaded.title);
       setPages(loaded.pages);
       setActivePageId(loaded.activePageId);
@@ -1317,7 +1421,7 @@ export function useWhiteboardSync() {
       return {
         ok: true,
         roomId: cleaned,
-        needsSignIn: !userRef.current,
+        needsSignIn: false,
       };
     },
     []
@@ -1454,6 +1558,10 @@ export function useWhiteboardSync() {
     anonymousProviderDisabled,
     cloudState,
     cloudMessage,
+    p2pState,
+    p2pPeerCount,
+    p2pMessage,
+    lastHostSyncedAt,
     retryCloudConnect,
     handleGoogleSignIn,
     handleGoogleSignOut,

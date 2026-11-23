@@ -206,10 +206,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [toggleFullscreen, wb]);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setExportNotice(msg);
-    setTimeout(() => setExportNotice(null), 2400);
-  };
+    setTimeout(() => setExportNotice(null), 2600);
+  }, []);
+
+  // Notify immediately when Tablet/HP receives active board state from PC/Laptop Host
+  useEffect(() => {
+    if (wb.lastHostSyncedAt > 0) {
+      showToast(`Terhubung ke papan aktif PC/Laptop (${wb.roomId})`);
+    }
+  }, [wb.lastHostSyncedAt, wb.roomId, showToast]);
 
   const handleExportPNG = () => {
     if (!wb.activePage) return;
@@ -320,46 +327,56 @@ export default function App() {
             <span className="hidden sm:inline text-slate-300" aria-hidden="true">
               /
             </span>
-            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-600 min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-600 min-w-0">
               <button
                 type="button"
                 onClick={() => setIsConnectOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors min-w-0"
-                title="Klik untuk lihat QR Code & status koneksi cloud"
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 sm:bg-transparent hover:bg-slate-100 border border-slate-200/80 sm:border-transparent transition-colors min-w-0"
+                title="Klik untuk masukkan kode ruang PC/Laptop atau lihat QR Code"
               >
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    wb.p2pState === 'connected'
+                      ? 'bg-emerald-500'
+                      : wb.cloudState === 'synced' || wb.p2pState === 'ready'
+                      ? 'bg-teal-500'
+                      : wb.p2pState === 'connecting' || wb.p2pState === 'initializing'
+                      ? 'bg-slate-400 animate-pulse'
+                      : 'bg-amber-500'
+                  }`}
+                />
                 <span className="font-mono font-semibold text-slate-800 whitespace-nowrap">
                   {wb.roomId}
                 </span>
-                <span aria-hidden="true" className="text-slate-300">
+                <span aria-hidden="true" className="hidden sm:inline text-slate-300">
                   ·
                 </span>
                 <span
-                  className={`inline-flex items-center gap-1.5 truncate max-w-[175px] font-medium ${
-                    wb.cloudState === 'synced'
+                  className={`hidden sm:inline truncate max-w-[180px] font-medium ${
+                    wb.p2pState === 'connected'
+                      ? 'text-emerald-700'
+                      : wb.cloudState === 'synced' || wb.p2pState === 'ready'
                       ? 'text-teal-700'
-                      : wb.cloudState === 'connecting'
-                      ? 'text-slate-500'
-                      : 'text-amber-700'
+                      : wb.p2pState === 'not-found'
+                      ? 'text-amber-700'
+                      : 'text-slate-500'
                   }`}
                 >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      wb.cloudState === 'synced'
-                        ? 'bg-teal-500'
-                        : wb.cloudState === 'connecting'
-                        ? 'bg-slate-400 animate-pulse'
-                        : 'bg-amber-500'
-                    }`}
-                  />
-                  {wb.cloudState === 'synced'
+                  {wb.p2pState === 'connected'
+                    ? isTabletMode
+                      ? 'Terhubung ke PC'
+                      : `Terhubung (${wb.p2pPeerCount} Remote)`
+                    : wb.cloudState === 'synced'
                     ? 'Cloud Real-Time'
-                    : wb.cloudState === 'connecting'
-                    ? 'Menyambung...'
-                    : 'Mode Lokal'}
+                    : wb.p2pState === 'ready'
+                    ? 'Siap Remote'
+                    : wb.p2pState === 'not-found'
+                    ? 'Menunggu PC...'
+                    : 'Menyambung...'}
                 </span>
               </button>
-              {!isTabletMode && wb.isRemoteTransmitting && (
-                <span className="hidden lg:inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md whitespace-nowrap">
+              {!isTabletMode && (wb.isRemoteTransmitting || wb.p2pState === 'connected') && (
+                <span className="hidden lg:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md whitespace-nowrap">
                   <Radio className="w-3 h-3 animate-pulse" />
                   Remote Aktif
                 </span>
@@ -768,12 +785,16 @@ export default function App() {
       <ConnectModal
         isOpen={isConnectOpen}
         onClose={() => setIsConnectOpen(false)}
+        viewMode={wb.viewMode}
         roomId={wb.roomId}
         user={wb.user}
         authError={wb.authError}
         anonymousProviderDisabled={wb.anonymousProviderDisabled}
         cloudState={wb.cloudState}
         cloudMessage={wb.cloudMessage}
+        p2pState={wb.p2pState}
+        p2pPeerCount={wb.p2pPeerCount}
+        p2pMessage={wb.p2pMessage}
         onSwitchRoom={wb.switchRoom}
         onCreateNewRoom={wb.createNewRoom}
         onRetryConnect={wb.retryCloudConnect}
@@ -781,7 +802,13 @@ export default function App() {
         onSignOut={wb.handleGoogleSignOut}
         onSwitchToExtendHere={() => wb.setViewMode('extend')}
         onSwitchToTabletHere={() => wb.setViewMode('tablet')}
-        onRoomSwitched={(code) => showToast(`Ruang aktif: ${code}`)}
+        onRoomSwitched={(code, isRemote) =>
+          showToast(
+            isRemote
+              ? `Menghubungkan Remote ke papan PC (${code})...`
+              : `Ruang aktif: ${code}`
+          )
+        }
       />
 
       <TemplateDrawer
