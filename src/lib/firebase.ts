@@ -1,5 +1,11 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+} from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CanvasElement, MAX_ELEMENTS_PER_PAGE } from '../types/whiteboard';
@@ -76,6 +82,10 @@ export function isQuotaError(error: unknown): boolean {
 
 export async function signInWithGoogle() {
   return signInWithPopup(auth, googleProvider);
+}
+
+export async function signInWithGoogleRedirect() {
+  return signInWithRedirect(auth, googleProvider);
 }
 
 export async function signOutGoogle() {

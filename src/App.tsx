@@ -11,6 +11,8 @@ import {
   Minimize2,
   Monitor,
   MonitorUp,
+  PanelTopClose,
+  PanelTopOpen,
   QrCode,
   Radio,
   RotateCw,
@@ -40,6 +42,8 @@ export default function App() {
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isLandscapeLocked, setIsLandscapeLocked] = useState(false);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chromeCollapsed, setChromeCollapsed] = useState(false);
   const [extendControlsVisible, setExtendControlsVisible] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
@@ -301,8 +305,8 @@ export default function App() {
         isFullscreen ? 'bg-slate-950' : 'bg-slate-100'
       }`}
     >
-      {/* TOP BAR (Adapts cleanly between Laptop Projector, Portrait Phone & Landscape Phone) */}
-      {!chromeCollapsed && (
+      {/* TOP BAR (Collapsible for ultra-clean whiteboard view on PC, Laptop, Tablet & HP) */}
+      {!chromeCollapsed && !headerCollapsed && (
         <header
           className={`shrink-0 bg-white border-b border-slate-200 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:px-5 ${
             isShortLandscape ? 'py-1' : 'py-2'
@@ -520,61 +524,121 @@ export default function App() {
                 <span className="sm:hidden">QR</span>
               </button>
             )}
+
+            {/* Independent Collapse Header Trigger */}
+            <button
+              type="button"
+              onClick={() => setHeaderCollapsed(true)}
+              title="Ciutkan menu header agar papan tulis lebih bersih"
+              aria-label="Ciutkan Header"
+              className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors shrink-0"
+            >
+              <PanelTopClose className="w-4 h-4" />
+            </button>
           </div>
         </header>
       )}
 
-      {/* MAIN STAGE: Precision 16:9 Canvas (Exact auto-fit in Portrait, Landscape & Desktop) */}
+      {/* Floating Expand Header Handle when Header is Collapsed */}
+      {!chromeCollapsed && headerCollapsed && (
+        <div className="fixed top-[max(0.5rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-30">
+          <button
+            type="button"
+            onClick={() => setHeaderCollapsed(false)}
+            title="Tampilkan menu header atas"
+            aria-label="Tampilkan Header"
+            className="min-h-[38px] px-3.5 py-1.5 rounded-full bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-md text-xs font-semibold text-slate-700 inline-flex items-center gap-2 transition-all active:scale-95"
+          >
+            <PanelTopOpen className="w-4 h-4 text-teal-600 shrink-0" />
+            <span className="font-display font-bold text-slate-900">FlipCast</span>
+            <span className="hidden sm:inline font-mono text-[11px] text-slate-500">
+              {wb.roomId}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* MAIN WORKSPACE: Collapsible Left Mini-Sidebar + Precision 16:9 Canvas Stage */}
       <main
-        className={`flex-1 min-h-0 w-full flex flex-col items-center justify-center ${
+        className={`flex-1 min-h-0 w-full flex flex-row items-stretch gap-2 sm:gap-3 ${
           chromeCollapsed
             ? 'p-1.5 sm:p-3 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
             : isShortLandscape
             ? 'px-2 py-1 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]'
-            : 'px-2.5 py-2 sm:px-5 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))]'
+            : 'px-2.5 py-2 sm:px-4 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))]'
         } relative`}
       >
-        {/* Subtle informational bar on mobile Laptop view or Mirror mode */}
-        {!chromeCollapsed && isCanvasReadOnly && (
-          <div className="mb-1.5 w-full max-w-[1280px] flex items-center justify-between text-xs text-slate-600 px-1">
-            <span className="inline-flex items-center gap-1.5 font-medium">
-              <Monitor className="w-3.5 h-3.5 text-teal-600" />
-              Mode Mirror Aktif — Layar menerima coretan live dari Tablet/HP secara otomatis.
-            </span>
-            <button
-              type="button"
-              onClick={() => wb.setLaptopCanEdit(true)}
-              className="text-teal-700 font-semibold hover:underline"
-            >
-              Aktifkan Edit di Laptop
-            </button>
-          </div>
+        {/* Left Collapsible Mini-Sidebar for Drawing Tools */}
+        {!chromeCollapsed && !isCanvasReadOnly && (
+          <DrawingToolbar
+            activeTool={activeTool}
+            onSelectTool={setActiveTool}
+            color={color}
+            onSelectColor={setColor}
+            stickyColor={stickyColor}
+            onSelectStickyColor={setStickyColor}
+            strokeSize={strokeSize}
+            onSelectStrokeSize={setStrokeSize}
+            fontSize={fontSize}
+            onSelectFontSize={setFontSize}
+            background={wb.activePage?.background || 'white'}
+            onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
+            canUndo={wb.canUndo}
+            canRedo={wb.canRedo}
+            onUndo={wb.undo}
+            onRedo={wb.redo}
+            onClearPage={wb.clearActivePage}
+            onOpenTemplates={() => setIsTemplatesOpen(true)}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+            compact={isTabletMode}
+          />
         )}
 
-        {/* Mathematically exact 16:9 Container-Query Stage (never overflows or shrinks unnecessarily on rotation) */}
-        <div className="flex-1 w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 'min(100cqw, calc(100cqh * 16 / 9))',
-              height: 'min(100cqh, calc(100cqw * 9 / 16))',
-            }}
-          >
-            <WhiteboardCanvas
-              background={wb.activePage?.background || 'white'}
-              elements={wb.activePage?.elements || []}
-              remoteLiveElement={wb.remoteLiveElement}
-              activeTool={activeTool}
-              color={color}
-              stickyColor={stickyColor}
-              strokeSize={strokeSize}
-              fontSize={fontSize}
-              readOnly={isCanvasReadOnly}
-              onAddElement={wb.addElement}
-              onUpdateElement={wb.updateElement}
-              onRemoveElement={wb.removeElementById}
-              onEmitLiveStroke={wb.emitLiveStroke}
-            />
+        {/* Right Stage Column: Optional Mirror Bar + Precision 16:9 Canvas */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col items-center justify-center">
+          {/* Subtle informational bar on Mirror mode */}
+          {!chromeCollapsed && isCanvasReadOnly && (
+            <div className="mb-1.5 w-full max-w-[1280px] flex items-center justify-between text-xs text-slate-600 px-1">
+              <span className="inline-flex items-center gap-1.5 font-medium">
+                <Monitor className="w-3.5 h-3.5 text-teal-600" />
+                Mode Mirror Aktif — Layar menerima coretan live dari Tablet/HP secara otomatis.
+              </span>
+              <button
+                type="button"
+                onClick={() => wb.setLaptopCanEdit(true)}
+                className="text-teal-700 font-semibold hover:underline"
+              >
+                Aktifkan Edit di Laptop
+              </button>
+            </div>
+          )}
+
+          {/* Mathematically exact 16:9 Container-Query Stage (auto-expands when header or sidebar collapses!) */}
+          <div className="flex-1 w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
+            <div
+              className="flex items-center justify-center"
+              style={{
+                width: 'min(100cqw, calc(100cqh * 16 / 9))',
+                height: 'min(100cqh, calc(100cqw * 9 / 16))',
+              }}
+            >
+              <WhiteboardCanvas
+                background={wb.activePage?.background || 'white'}
+                elements={wb.activePage?.elements || []}
+                remoteLiveElement={wb.remoteLiveElement}
+                activeTool={activeTool}
+                color={color}
+                stickyColor={stickyColor}
+                strokeSize={strokeSize}
+                fontSize={fontSize}
+                readOnly={isCanvasReadOnly}
+                onAddElement={wb.addElement}
+                onUpdateElement={wb.updateElement}
+                onRemoveElement={wb.removeElementById}
+                onEmitLiveStroke={wb.emitLiveStroke}
+              />
+            </div>
           </div>
         </div>
 
@@ -611,7 +675,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Export / Draft / Rotation Confirmation Toast */}
+        {/* Export / Draft / Rotation / Room Confirmation Toast */}
         {exportNotice && (
           <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] text-center bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg">
             {exportNotice}
@@ -619,39 +683,15 @@ export default function App() {
         )}
       </main>
 
-      {/* BOTTOM DOCK: Ergonomic Drawing Toolbar + Flipchart Page Tabs */}
+      {/* SLIM BOTTOM DOCK: Flipchart Page Tabs Only (Drawing Toolbar is now in the Left Mini-Sidebar) */}
       {!chromeCollapsed && (
         <footer
-          className={`shrink-0 w-full max-w-[1380px] mx-auto pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] sm:px-5 ${
+          className={`shrink-0 w-full max-w-[1440px] mx-auto pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] sm:px-4 ${
             isShortLandscape
-              ? 'pb-[max(0.375rem,env(safe-area-inset-bottom))] space-y-1'
-              : 'pb-[max(0.625rem,env(safe-area-inset-bottom))] space-y-2'
+              ? 'pb-[max(0.375rem,env(safe-area-inset-bottom))]'
+              : 'pb-[max(0.625rem,env(safe-area-inset-bottom))]'
           } z-20`}
         >
-          {!isCanvasReadOnly && (
-            <DrawingToolbar
-              activeTool={activeTool}
-              onSelectTool={setActiveTool}
-              color={color}
-              onSelectColor={setColor}
-              stickyColor={stickyColor}
-              onSelectStickyColor={setStickyColor}
-              strokeSize={strokeSize}
-              onSelectStrokeSize={setStrokeSize}
-              fontSize={fontSize}
-              onSelectFontSize={setFontSize}
-              background={wb.activePage?.background || 'white'}
-              onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
-              canUndo={wb.canUndo}
-              canRedo={wb.canRedo}
-              onUndo={wb.undo}
-              onRedo={wb.redo}
-              onClearPage={wb.clearActivePage}
-              onOpenTemplates={() => setIsTemplatesOpen(true)}
-              compact={isTabletMode}
-            />
-          )}
-
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <FlipchartBar
@@ -694,6 +734,7 @@ export default function App() {
         onClose={() => setIsConnectOpen(false)}
         roomId={wb.roomId}
         user={wb.user}
+        authError={wb.authError}
         cloudState={wb.cloudState}
         cloudMessage={wb.cloudMessage}
         onSwitchRoom={wb.switchRoom}
@@ -702,6 +743,7 @@ export default function App() {
         onSignOut={wb.handleGoogleSignOut}
         onSwitchToExtendHere={() => wb.setViewMode('extend')}
         onSwitchToTabletHere={() => wb.setViewMode('tablet')}
+        onRoomSwitched={(code) => showToast(`Ruang aktif: ${code}`)}
       />
 
       <TemplateDrawer

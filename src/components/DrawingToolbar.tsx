@@ -8,6 +8,8 @@ import {
   LayoutTemplate,
   Minus,
   MousePointer2,
+  PanelLeftClose,
+  PanelLeftOpen,
   PenTool,
   Redo2,
   Rows3,
@@ -48,21 +50,34 @@ interface DrawingToolbarProps {
   onRedo: () => void;
   onClearPage: () => void;
   onOpenTemplates: () => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
   compact?: boolean;
 }
 
-const TOOLS: { id: ToolType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'select', label: 'Pilih', icon: MousePointer2 },
+const TOOLS: {
+  id: ToolType;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: 'select', label: 'Pilih & Geser', icon: MousePointer2 },
   { id: 'pen', label: 'Spidol', icon: PenTool },
   { id: 'highlighter', label: 'Stabilo', icon: Highlighter },
   { id: 'text', label: 'Teks', icon: Type },
-  { id: 'sticky', label: 'Catatan', icon: StickyNote },
+  { id: 'sticky', label: 'Catatan Tempel', icon: StickyNote },
   { id: 'line', label: 'Garis', icon: Minus },
   { id: 'arrow', label: 'Panah', icon: ArrowUpRight },
   { id: 'rect', label: 'Kotak', icon: Square },
   { id: 'ellipse', label: 'Lingkaran', icon: Circle },
   { id: 'eraser', label: 'Hapus', icon: Eraser },
 ];
+
+const SHORT_TEXT_LABELS: Record<FontSizeKey, string> = {
+  sm: 'S',
+  md: 'M',
+  lg: 'L',
+  xl: 'XL',
+};
 
 export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   activeTool,
@@ -83,13 +98,13 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onRedo,
   onClearPage,
   onOpenTemplates,
-  compact = false,
+  collapsed,
+  onToggleCollapse,
 }) => {
   const [confirmClear, setConfirmClear] = useState(false);
 
   const handlePaperSwitch = (bg: PaperBackground) => {
     onSelectBackground(bg);
-    // Smart high-contrast ink assist when switching to/from dark chalkboard
     if (bg === 'chalkboard' && (color === '#111827' || color === '#0F294A')) {
       onSelectColor('#F8FAFC');
     } else if (bg !== 'chalkboard' && color === '#F8FAFC') {
@@ -97,248 +112,330 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
     }
   };
 
+  const activeToolMeta = TOOLS.find((t) => t.id === activeTool) || TOOLS[1];
+  const ActiveToolIcon = activeToolMeta.icon;
+  const activeSwatchColor = activeTool === 'sticky' ? stickyColor : color;
+
+  // COLLAPSED STATE: Floating sleek left-edge tab so canvas gets 100% width
+  if (collapsed) {
+    return (
+      <div className="fixed left-[max(0.5rem,env(safe-area-inset-left))] top-1/2 -translate-y-1/2 z-30">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          title="Buka Mini Sidebar Alat Tulis"
+          aria-label="Buka Sidebar Alat Tulis"
+          className="min-w-[44px] py-3 px-2 rounded-2xl bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-lg flex flex-col items-center gap-2 text-slate-700 transition-all active:scale-95"
+        >
+          <PanelLeftOpen className="w-4 h-4 text-teal-600" />
+          <span className="w-6 h-px bg-slate-200" aria-hidden="true" />
+          <ActiveToolIcon className="w-4 h-4 text-slate-900" />
+          <span
+            className="w-4 h-4 rounded-full border border-slate-300 block"
+            style={{ backgroundColor: activeSwatchColor }}
+          />
+        </button>
+      </div>
+    );
+  }
+
+  // EXPANDED STATE: Compact 2-column vertical Mini-Sidebar on the left
   return (
-    <div className="w-full bg-white border border-slate-200/90 rounded-2xl shadow-sm px-2.5 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
-      {/* Drawing Tools */}
-      <div className="flex items-center gap-1 shrink-0" role="toolbar" aria-label="Alat Tulis">
-        {TOOLS.map((tool) => {
-          const Icon = tool.icon;
-          const isActive = activeTool === tool.id;
-          return (
-            <button
-              key={tool.id}
-              type="button"
-              onClick={() => onSelectTool(tool.id)}
-              title={tool.label}
-              className={`min-h-[44px] ${
-                compact ? 'min-w-[44px] px-2.5' : 'px-3'
-              } rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-all whitespace-nowrap shrink-0 active:scale-[0.97] ${
-                isActive
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-100'
-              }`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              {!compact && <span className="hidden xl:inline">{tool.label}</span>}
-            </button>
-          );
-        })}
+    <aside
+      aria-label="Mini Sidebar Alat Tulis"
+      className="shrink-0 w-[100px] sm:w-[110px] h-full max-h-full bg-white border border-slate-200/90 rounded-2xl shadow-sm flex flex-col overflow-hidden z-20"
+    >
+      {/* Mini-Sidebar Header with Collapse Button */}
+      <div className="shrink-0 flex items-center justify-between px-2.5 py-1.5 border-b border-slate-100">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+          Alat
+        </span>
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          title="Ciutkan Sidebar Alat"
+          aria-label="Ciutkan Sidebar"
+          className="min-w-[36px] min-h-[36px] rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+        >
+          <PanelLeftClose className="w-4 h-4" />
+        </button>
       </div>
 
-      <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
-
-      {/* Contextual Palette: Sticky Note Pastel Colors OR High-Contrast Ink Colors */}
-      {activeTool === 'sticky' ? (
-        <div className="flex items-center gap-1.5 shrink-0" aria-label="Warna Catatan Tempel">
-          {STICKY_COLORS.map((swatch) => {
-            const isSelected = stickyColor.toLowerCase() === swatch.bg.toLowerCase();
+      {/* Scrollable Vertical Rail (Fits without scrolling on Desktop/Tablet, scrolls cleanly on short Phone Landscape) */}
+      <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar p-1.5 space-y-2">
+        {/* 10 Drawing Tools in Crisp 2-Column Grid */}
+        <div
+          className="grid grid-cols-2 gap-1"
+          role="toolbar"
+          aria-label="Alat Tulis"
+        >
+          {TOOLS.map((tool) => {
+            const Icon = tool.icon;
+            const isActive = activeTool === tool.id;
             return (
               <button
-                key={swatch.id}
+                key={tool.id}
                 type="button"
-                onClick={() => onSelectStickyColor(swatch.bg)}
-                title={`Catatan ${swatch.label}`}
-                aria-label={`Warna catatan ${swatch.label}`}
-                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-transform active:scale-95 ${
-                  isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
+                onClick={() => onSelectTool(tool.id)}
+                title={tool.label}
+                aria-label={tool.label}
+                className={`min-h-[42px] w-full rounded-xl flex items-center justify-center transition-all active:scale-95 ${
+                  isActive
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
                 }`}
               >
-                <span
-                  className="w-6 h-6 rounded-md block border shadow-xs"
-                  style={{ backgroundColor: swatch.bg, borderColor: swatch.border }}
-                />
+                <Icon className="w-4 h-4 shrink-0" />
               </button>
             );
           })}
         </div>
-      ) : (
-        <div className="flex items-center gap-1.5 shrink-0" aria-label="Warna Tinta">
-          {COLOR_PALETTE.map((swatch) => {
-            const isSelected = color === swatch.hex;
-            const isLight = swatch.hex === '#F8FAFC';
-            return (
-              <button
-                key={swatch.id}
-                type="button"
-                onClick={() => {
-                  onSelectColor(swatch.hex);
-                  if (activeTool === 'eraser' || activeTool === 'select') onSelectTool('pen');
-                }}
-                title={swatch.label}
-                aria-label={`Warna ${swatch.label}`}
-                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-transform active:scale-95 ${
-                  isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
-                }`}
-              >
-                <span
-                  className={`w-6 h-6 rounded-full block ${
-                    isLight ? 'border border-slate-300 shadow-inner' : ''
-                  }`}
-                  style={{ backgroundColor: swatch.hex }}
-                />
-              </button>
-            );
-          })}
-        </div>
-      )}
 
-      <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
+        <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 
-      {/* Contextual Hint / Text Size / Stroke Thickness */}
-      {activeTool === 'select' ? (
-        <span className="hidden md:inline-flex items-center px-2.5 py-1.5 rounded-xl bg-teal-50 text-teal-800 text-xs font-medium whitespace-nowrap shrink-0">
-          Ketuk & geser objek · Ketuk 2× teks/catatan untuk edit
-        </span>
-      ) : activeTool === 'sticky' ? (
-        <span className="hidden md:inline-flex items-center px-2.5 py-1.5 rounded-xl bg-amber-50 text-amber-900 text-xs font-medium whitespace-nowrap shrink-0">
-          Ketuk area kosong untuk menempel catatan baru
-        </span>
-      ) : activeTool === 'text' ? (
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0">
-          {(Object.keys(TEXT_SIZES) as FontSizeKey[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onSelectFontSize(key)}
-              className={`min-h-[40px] px-2.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                fontSize === key
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {TEXT_SIZES[key].label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0">
-          {(Object.keys(STROKE_WIDTHS) as StrokeSizeKey[]).map((key) => {
-            const dotPx = key === 'thin' ? 6 : key === 'medium' ? 10 : 14;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => onSelectStrokeSize(key)}
-                title={`Ketebalan ${STROKE_WIDTHS[key].label}`}
-                className={`min-h-[40px] min-w-[40px] px-2.5 rounded-lg inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
-                  strokeSize === key
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <span
-                  className="rounded-full bg-current inline-block shrink-0"
-                  style={{ width: dotPx, height: dotPx }}
-                />
-                <span className="hidden sm:inline">{STROKE_WIDTHS[key].label}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
-
-      {/* Paper Background Selector */}
-      <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0" aria-label="Latar Kertas">
-        {PAPER_BACKGROUNDS.map((bg) => {
-          const isActive = background === bg.id;
-          return (
-            <button
-              key={bg.id}
-              type="button"
-              onClick={() => handlePaperSwitch(bg.id)}
-              title={`${bg.label} — ${bg.description}`}
-              className={`min-h-[40px] min-w-[40px] px-2.5 rounded-lg inline-flex items-center justify-center gap-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
-                isActive
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {bg.id === 'white' && (
-                <span className="w-3.5 h-3.5 rounded-xs bg-white border border-slate-300 inline-block" />
-              )}
-              {bg.id === 'grid' && <Grid3X3 className="w-3.5 h-3.5 text-slate-600" />}
-              {bg.id === 'lined' && <Rows3 className="w-3.5 h-3.5 text-sky-600" />}
-              {bg.id === 'chalkboard' && (
-                <span className="w-3.5 h-3.5 rounded-xs bg-[#14332B] border border-emerald-900 inline-block" />
-              )}
-              <span className="hidden lg:inline">{bg.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="w-px h-7 bg-slate-200 shrink-0" aria-hidden="true" />
-
-      {/* Templates + Undo/Redo + Clear */}
-      <div className="flex items-center gap-1 shrink-0 ml-auto">
-        <button
-          type="button"
-          onClick={onOpenTemplates}
-          title="Template Cepat & Kerangka Catatan"
-          className="min-h-[44px] min-w-[44px] px-2.5 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-50 transition-colors whitespace-nowrap"
-        >
-          <LayoutTemplate className="w-4 h-4 shrink-0" />
-          <span className="hidden md:inline">Template</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onUndo}
-          disabled={!canUndo}
-          title="Urungkan (Ctrl+Z)"
-          aria-label="Urungkan"
-          className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
-        >
-          <Undo2 className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onRedo}
-          disabled={!canRedo}
-          title="Ulangi (Ctrl+Y)"
-          aria-label="Ulangi"
-          className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
-        >
-          <Redo2 className="w-4 h-4" />
-        </button>
-
-        {confirmClear ? (
-          <div className="flex items-center gap-1 bg-red-50 border border-red-200 rounded-xl px-2 py-1">
-            <span className="text-[11px] font-semibold text-red-700 whitespace-nowrap">
-              Bersihkan?
+        {/* Contextual Color Grid: Sticky Note Pastel Colors OR Ink Colors */}
+        {activeTool === 'sticky' ? (
+          <div className="space-y-1">
+            <span className="block text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Catatan
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                onClearPage();
-                setConfirmClear(false);
-              }}
-              className="px-2 py-1 rounded-lg bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700"
-            >
-              Ya
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmClear(false)}
-              className="px-2 py-1 rounded-lg bg-white text-slate-700 text-[11px] font-medium hover:bg-slate-100"
-            >
-              Batal
-            </button>
+            <div className="grid grid-cols-3 gap-1 place-items-center" aria-label="Warna Catatan Tempel">
+              {STICKY_COLORS.map((swatch) => {
+                const isSelected = stickyColor.toLowerCase() === swatch.bg.toLowerCase();
+                return (
+                  <button
+                    key={swatch.id}
+                    type="button"
+                    onClick={() => onSelectStickyColor(swatch.bg)}
+                    title={`Catatan ${swatch.label}`}
+                    aria-label={`Warna catatan ${swatch.label}`}
+                    className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform active:scale-95 ${
+                      isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
+                    }`}
+                  >
+                    <span
+                      className="w-5 h-5 rounded-md block border shadow-xs"
+                      style={{ backgroundColor: swatch.bg, borderColor: swatch.border }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ) : (
+          <div className="space-y-1">
+            <span className="block text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Warna
+            </span>
+            <div className="grid grid-cols-3 gap-1 place-items-center" aria-label="Warna Tinta">
+              {COLOR_PALETTE.map((swatch) => {
+                const isSelected = color === swatch.hex;
+                const isLight = swatch.hex === '#F8FAFC';
+                return (
+                  <button
+                    key={swatch.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectColor(swatch.hex);
+                      if (activeTool === 'eraser' || activeTool === 'select') onSelectTool('pen');
+                    }}
+                    title={swatch.label}
+                    aria-label={`Warna ${swatch.label}`}
+                    className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform active:scale-95 ${
+                      isSelected ? 'ring-2 ring-offset-1 ring-teal-600 scale-105' : 'hover:scale-105'
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-full block ${
+                        isLight ? 'border border-slate-300 shadow-inner' : ''
+                      }`}
+                      style={{ backgroundColor: swatch.hex }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
+
+        {/* Contextual Size / Mode Indicator */}
+        {activeTool === 'select' ? (
+          <div className="px-1.5 py-1.5 rounded-xl bg-teal-50 text-teal-800 text-[10px] font-semibold text-center leading-tight">
+            Ketuk & geser objek
+          </div>
+        ) : activeTool === 'sticky' ? (
+          <div className="px-1.5 py-1.5 rounded-xl bg-amber-50 text-amber-900 text-[10px] font-semibold text-center leading-tight">
+            Ketuk papan untuk tempel
+          </div>
+        ) : activeTool === 'text' ? (
+          <div className="space-y-1">
+            <span className="block text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Huruf
+            </span>
+            <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
+              {(Object.keys(TEXT_SIZES) as FontSizeKey[]).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onSelectFontSize(key)}
+                  title={`Ukuran ${TEXT_SIZES[key].label}`}
+                  className={`min-h-[34px] rounded-lg text-[11px] font-bold transition-colors ${
+                    fontSize === key
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {SHORT_TEXT_LABELS[key]}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <span className="block text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Tebal
+            </span>
+            <div className="grid grid-cols-3 gap-0.5 bg-slate-100 p-1 rounded-xl">
+              {(Object.keys(STROKE_WIDTHS) as StrokeSizeKey[]).map((key) => {
+                const dotPx = key === 'thin' ? 5 : key === 'medium' ? 8 : 12;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onSelectStrokeSize(key)}
+                    title={`Ketebalan ${STROKE_WIDTHS[key].label}`}
+                    aria-label={`Ketebalan ${STROKE_WIDTHS[key].label}`}
+                    className={`min-h-[34px] rounded-lg flex items-center justify-center transition-colors ${
+                      strokeSize === key
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <span
+                      className="rounded-full bg-current inline-block shrink-0"
+                      style={{ width: dotPx, height: dotPx }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
+
+        {/* Paper Background 2x2 Selector */}
+        <div className="space-y-1">
+          <span className="block text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Kertas
+          </span>
+          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl" aria-label="Latar Kertas">
+            {PAPER_BACKGROUNDS.map((bg) => {
+              const isActive = background === bg.id;
+              return (
+                <button
+                  key={bg.id}
+                  type="button"
+                  onClick={() => handlePaperSwitch(bg.id)}
+                  title={`${bg.label} — ${bg.description}`}
+                  aria-label={bg.label}
+                  className={`min-h-[34px] rounded-lg flex items-center justify-center transition-colors ${
+                    isActive
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {bg.id === 'white' && (
+                    <span className="w-3.5 h-3.5 rounded-xs bg-white border border-slate-300 inline-block" />
+                  )}
+                  {bg.id === 'grid' && <Grid3X3 className="w-3.5 h-3.5 text-slate-600" />}
+                  {bg.id === 'lined' && <Rows3 className="w-3.5 h-3.5 text-sky-600" />}
+                  {bg.id === 'chalkboard' && (
+                    <span className="w-3.5 h-3.5 rounded-xs bg-[#14332B] border border-emerald-900 inline-block" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
+
+        {/* History, Templates & Clear Page */}
+        <div className="grid grid-cols-2 gap-1">
           <button
             type="button"
-            onClick={() => setConfirmClear(true)}
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Urungkan (Ctrl+Z)"
+            aria-label="Urungkan"
+            className="min-h-[40px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
+          >
+            <Undo2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Ulangi (Ctrl+Y)"
+            aria-label="Ulangi"
+            className="min-h-[40px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
+          >
+            <Redo2 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onOpenTemplates}
+            title="Template Cepat & Kerangka Catatan"
+            aria-label="Template Cepat"
+            className="min-h-[40px] rounded-xl flex items-center justify-center text-teal-700 hover:bg-teal-50 transition-colors"
+          >
+            <LayoutTemplate className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmClear((v) => !v)}
             title="Bersihkan Halaman Aktif"
             aria-label="Bersihkan Halaman"
-            className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-600 hover:text-red-600 hover:bg-red-50 transition-colors"
+            className={`min-h-[40px] rounded-xl flex items-center justify-center transition-colors ${
+              confirmClear
+                ? 'bg-red-100 text-red-700'
+                : 'text-slate-600 hover:text-red-600 hover:bg-red-50'
+            }`}
           >
             <Trash2 className="w-4 h-4" />
           </button>
+        </div>
+
+        {confirmClear && (
+          <div className="rounded-xl bg-red-50 border border-red-200 p-1.5 space-y-1.5 text-center">
+            <span className="block text-[10px] font-bold text-red-700">
+              Bersihkan?
+            </span>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  onClearPage();
+                  setConfirmClear(false);
+                }}
+                className="py-1 rounded-lg bg-red-600 text-white text-[10px] font-bold hover:bg-red-700"
+              >
+                Ya
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmClear(false)}
+                className="py-1 rounded-lg bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-100"
+              >
+                Batal
+              </button>
+            </div>
+          </div>
         )}
       </div>
-    </div>
+    </aside>
   );
 });

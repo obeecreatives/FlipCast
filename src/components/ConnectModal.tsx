@@ -15,19 +15,28 @@ import {
 import { User } from 'firebase/auth';
 import { CloudSyncState } from '../hooks/useWhiteboardSync';
 
+interface SwitchRoomResult {
+  ok: boolean;
+  roomId?: string;
+  error?: string;
+  needsSignIn?: boolean;
+}
+
 interface ConnectModalProps {
   isOpen: boolean;
   onClose: () => void;
   roomId: string;
   user: User | null;
+  authError?: string | null;
   cloudState: CloudSyncState;
   cloudMessage: string;
-  onSwitchRoom: (nextRoom: string) => void;
-  onCreateNewRoom: () => void;
+  onSwitchRoom: (nextRoom: string) => SwitchRoomResult;
+  onCreateNewRoom: () => SwitchRoomResult;
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSwitchToExtendHere: () => void;
   onSwitchToTabletHere: () => void;
+  onRoomSwitched?: (roomCode: string) => void;
 }
 
 export const ConnectModal: React.FC<ConnectModalProps> = ({
@@ -35,6 +44,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   onClose,
   roomId,
   user,
+  authError,
   cloudState,
   cloudMessage,
   onSwitchRoom,
@@ -43,10 +53,15 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   onSignOut,
   onSwitchToExtendHere,
   onSwitchToTabletHere,
+  onRoomSwitched,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedTarget, setCopiedTarget] = useState<'tablet' | 'extend' | null>(null);
   const [roomInput, setRoomInput] = useState(roomId);
+  const [roomFeedback, setRoomFeedback] = useState<{
+    tone: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const tabletUrl = `${origin}/?view=tablet&room=${encodeURIComponent(roomId)}`;
@@ -55,6 +70,12 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   useEffect(() => {
     setRoomInput(roomId);
   }, [roomId]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setRoomFeedback(null);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -93,8 +114,45 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 
   const handleJoinRoom = (e: React.FormEvent) => {
     e.preventDefault();
-    if (roomInput.trim().length >= 4) {
-      onSwitchRoom(roomInput.trim());
+    const res = onSwitchRoom(roomInput);
+    if (!res.ok) {
+      setRoomFeedback({
+        tone: 'error',
+        text: res.error || 'Kode ruang tidak valid (minimal 4 karakter).',
+      });
+      return;
+    }
+
+    const joinedCode = res.roomId || roomInput.trim().toUpperCase();
+    setRoomInput(joinedCode);
+    onRoomSwitched?.(joinedCode);
+
+    if (res.needsSignIn) {
+      setRoomFeedback({
+        tone: 'warning',
+        text: `Kode ruang diatur ke ${joinedCode} (mode lokal). Untuk menyambungkan PC & Tablet antar perangkat, klik "Masuk Google" di atas pada kedua perangkat.`,
+      });
+    } else {
+      setRoomFeedback({
+        tone: 'success',
+        text: `Ruang ${joinedCode} dibuka — sinkronisasi real-time Firestore aktif.`,
+      });
+      window.setTimeout(() => {
+        onClose();
+      }, 650);
+    }
+  };
+
+  const handleGenerateRoom = () => {
+    const res = onCreateNewRoom();
+    if (res.ok && res.roomId) {
+      setRoomInput(res.roomId);
+      setRoomFeedback({
+        tone: res.needsSignIn ? 'warning' : 'success',
+        text: res.needsSignIn
+          ? `Ruang baru ${res.roomId} dibuat (mode lokal). Masuk Google di kedua perangkat untuk sinkronisasi real-time.`
+          : `Ruang baru ${res.roomId} dibuat dan siap dihubungkan.`,
+      });
     }
   };
 
@@ -209,6 +267,11 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                         Akun aktif: <span className="font-medium text-slate-800">{user.email}</span>
                       </p>
                     )}
+                    {authError && (
+                      <p className="mt-2 rounded-lg bg-red-50 border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-700 leading-snug">
+                        {authError}
+                      </p>
+                    )}
                   </div>
                 </div>
                 {user ? (
@@ -245,26 +308,53 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 <input
                   type="text"
                   value={roomInput}
-                  onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                  onChange={(e) => {
+                    setRoomInput(e.target.value.toUpperCase());
+                    if (roomFeedback) setRoomFeedback(null);
+                  }}
                   maxLength={24}
                   placeholder="PAPAN-XXXX"
                   className="min-w-0 flex-1 min-h-[44px] px-3 py-2 rounded-lg border border-slate-300 text-base sm:text-sm font-mono text-slate-900 focus:outline-none focus:border-teal-600"
                 />
                 <button
                   type="submit"
-                  className="min-h-[44px] px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                  className="min-h-[44px] px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white text-xs font-semibold transition-all whitespace-nowrap cursor-pointer"
                 >
                   Buka Ruang
                 </button>
                 <button
                   type="button"
-                  onClick={onCreateNewRoom}
+                  onClick={handleGenerateRoom}
                   title="Buat Kode Ruang Baru"
                   className="min-w-[44px] min-h-[44px] rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 flex items-center justify-center transition-colors shrink-0"
                 >
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
+
+              {roomFeedback && (
+                <div
+                  className={`rounded-lg px-3 py-2 text-xs font-medium leading-relaxed border ${
+                    roomFeedback.tone === 'success'
+                      ? 'bg-teal-50 border-teal-200 text-teal-900'
+                      : roomFeedback.tone === 'warning'
+                      ? 'bg-amber-50 border-amber-200 text-amber-950'
+                      : 'bg-red-50 border-red-200 text-red-700'
+                  }`}
+                >
+                  <p>{roomFeedback.text}</p>
+                  {roomFeedback.tone === 'warning' && !user && (
+                    <button
+                      type="button"
+                      onClick={() => void onSignIn()}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors"
+                    >
+                      <LogIn className="w-3.5 h-3.5" />
+                      Masuk Google Sekarang
+                    </button>
+                  )}
+                </div>
+              )}
             </form>
 
             {/* Extend Window */}

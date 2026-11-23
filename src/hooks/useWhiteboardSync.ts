@@ -23,6 +23,7 @@ import {
   OperationType,
   sanitizeElementsForFirestore,
   signInWithGoogle,
+  signInWithGoogleRedirect,
   signOutGoogle,
 } from '../lib/firebase';
 import {
@@ -222,6 +223,8 @@ export function useWhiteboardSync() {
   // Firebase Auth & Cloud sync state
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [syncNonce, setSyncNonce] = useState<number>(0);
   const [cloudState, setCloudState] = useState<CloudSyncState>('local');
   const [cloudMessage, setCloudMessage] = useState<string>('');
   const [roomOwnerId, setRoomOwnerId] = useState<string | null>(null);
@@ -606,7 +609,7 @@ export function useWhiteboardSync() {
       unsubs.forEach((u) => u());
       pageUnsubs.forEach((u) => u());
     };
-  }, [authReady, user, roomId, viewMode, saveToLocal]);
+  }, [authReady, user, roomId, viewMode, saveToLocal, syncNonce]);
 
   const activePage = useMemo(() => {
     return pages.find((p) => p.pageId === activePageId) || pages[0];
@@ -1157,21 +1160,43 @@ export function useWhiteboardSync() {
     [publishDraftNow]
   );
 
-  const switchRoom = useCallback((nextRawRoomId: string) => {
-    const cleaned = sanitizeId(nextRawRoomId, 32).toUpperCase();
-    if (cleaned.length < 4) return;
-    const loaded = loadLocalRoom(cleaned);
-    setRoomId(cleaned);
-    setRoomTitle(loaded.title);
-    setPages(loaded.pages);
-    setActivePageId(loaded.activePageId);
-    setUndoStacks({});
-    setRedoStacks({});
-    setRemoteLiveElement(null);
-  }, []);
+  const switchRoom = useCallback(
+    (
+      nextRawRoomId: string
+    ): { ok: boolean; roomId?: string; error?: string; needsSignIn?: boolean } => {
+      const normalized = nextRawRoomId.trim().replace(/\s+/g, '-');
+      const cleaned = sanitizeId(normalized, 32).toUpperCase();
+      if (cleaned.length < 4) {
+        return {
+          ok: false,
+          error: 'Kode ruang minimal 4 karakter (huruf, angka, atau tanda hubung).',
+        };
+      }
+      const loaded = loadLocalRoom(cleaned);
+      setRoomId(cleaned);
+      setRoomTitle(loaded.title);
+      setPages(loaded.pages);
+      setActivePageId(loaded.activePageId);
+      setUndoStacks({});
+      setRedoStacks({});
+      setRemoteLiveElement(null);
+      setSyncNonce((n) => n + 1);
+      try {
+        localStorage.setItem(LAST_ROOM_KEY, cleaned);
+      } catch {
+        // Ignore
+      }
+      return {
+        ok: true,
+        roomId: cleaned,
+        needsSignIn: !(userRef.current && userRef.current.emailVerified),
+      };
+    },
+    []
+  );
 
   const createNewRoom = useCallback(() => {
-    switchRoom(generateRoomCode());
+    return switchRoom(generateRoomCode());
   }, [switchRoom]);
 
   const updateRoomTitle = useCallback(
@@ -1203,14 +1228,41 @@ export function useWhiteboardSync() {
   );
 
   const handleGoogleSignIn = useCallback(async () => {
+    setAuthError(null);
     try {
       await signInWithGoogle();
-    } catch (error) {
+    } catch (error: unknown) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : '';
+      if (
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment'
+      ) {
+        try {
+          await signInWithGoogleRedirect();
+          return;
+        } catch (redirectErr) {
+          console.error('Redirect sign in failed:', redirectErr);
+        }
+      }
+      if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        setAuthError(
+          `Domain "${host}" belum didaftarkan di Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setAuthError('Jendela login Google ditutup sebelum selesai.');
+      } else {
+        setAuthError('Gagal masuk dengan Google. Periksa koneksi internet atau izinkan popup browser.');
+      }
       console.error('Sign in failed:', error);
     }
   }, []);
 
   const handleGoogleSignOut = useCallback(async () => {
+    setAuthError(null);
     try {
       await signOutGoogle();
     } catch (error) {
@@ -1256,6 +1308,7 @@ export function useWhiteboardSync() {
     setLaptopCanEdit,
     user,
     authReady,
+    authError,
     cloudState,
     cloudMessage,
     handleGoogleSignIn,
