@@ -108,7 +108,7 @@ function loadLocalRoom(roomId: string): PersistedRoomLocal {
       if (Array.isArray(parsed.pages) && parsed.pages.length > 0) {
         const normalized: PersistedRoomLocal = {
           roomId,
-          title: parsed.title || 'Sesi Papan Tulis',
+          title: parsed.title || 'obeecreatives — Sesi Papan Tulis',
           activePageId: parsed.activePageId || parsed.pages[0].pageId,
           pages: parsed.pages,
           updatedAtMs: parsed.updatedAtMs || Date.now(),
@@ -124,7 +124,7 @@ function loadLocalRoom(roomId: string): PersistedRoomLocal {
   const first = createInitialPage(0);
   return {
     roomId,
-    title: 'Sesi Papan Tulis',
+    title: 'obeecreatives — Sesi Papan Tulis',
     activePageId: first.pageId,
     pages: [first],
     updatedAtMs: Date.now(),
@@ -197,6 +197,21 @@ function parseUrlParams(): { viewMode: ViewMode; roomId: string } {
     savedRoom = sanitizeId(localStorage.getItem(LAST_ROOM_KEY) || '', 32).toUpperCase();
   } catch {
     // Ignore
+  }
+
+  // Seamlessly migrate legacy PAPAN-XXXX local rooms to OBEE-XXXX while preserving local drawings
+  if (savedRoom.startsWith('PAPAN-') && savedRoom.length >= 10) {
+    const migratedRoom = `OBEE-${savedRoom.slice(6)}`;
+    try {
+      const legacyData = localStorage.getItem(`${LOCAL_STORAGE_PREFIX}${savedRoom}`);
+      const targetExists = localStorage.getItem(`${LOCAL_STORAGE_PREFIX}${migratedRoom}`);
+      if (legacyData && !targetExists) {
+        localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${migratedRoom}`, legacyData);
+      }
+    } catch {
+      // Ignore
+    }
+    savedRoom = migratedRoom;
   }
 
   const roomId = savedRoom.length >= 4 ? savedRoom : generateRoomCode();
@@ -1390,12 +1405,16 @@ export function useWhiteboardSync() {
       nextViewMode?: ViewMode
     ): { ok: boolean; roomId?: string; error?: string; needsSignIn?: boolean } => {
       const normalized = nextRawRoomId.trim().replace(/\s+/g, '-');
-      const cleaned = sanitizeId(normalized, 32).toUpperCase();
+      let cleaned = sanitizeId(normalized, 32).toUpperCase();
       if (cleaned.length < 4) {
         return {
           ok: false,
-          error: 'Kode ruang minimal 4 karakter (huruf, angka, atau tanda hubung).',
+          error: 'Kode ruang minimal 4 karakter (contoh: OBEE-ZYYF atau cukup ketik ZYYF).',
         };
+      }
+      // Convenience: typing just the 4-character suffix automatically resolves to OBEE-XXXX
+      if (/^[A-Z0-9]{4}$/.test(cleaned)) {
+        cleaned = `OBEE-${cleaned}`;
       }
       const loaded = loadLocalRoom(cleaned);
       setRoomId(cleaned);

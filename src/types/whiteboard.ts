@@ -247,7 +247,7 @@ export function generateRoomCode(): string {
   for (let i = 0; i < 4; i++) {
     suffix += chars[Math.floor(Math.random() * chars.length)];
   }
-  return `PAPAN-${suffix}`;
+  return `OBEE-${suffix}`;
 }
 
 export function sanitizeId(input: string, maxLength = 32): string {

@@ -314,7 +314,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                     if (roomFeedback) setRoomFeedback(null);
                   }}
                   maxLength={24}
-                  placeholder="PAPAN-XXXX"
+                  placeholder="OBEE-XXXX"
                   className="min-w-0 flex-1 min-h-[44px] px-3 py-2 rounded-lg border border-slate-300 text-base sm:text-sm font-mono font-semibold text-slate-900 focus:outline-none focus:border-teal-600"
                 />
                 <button

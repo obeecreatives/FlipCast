@@ -359,7 +359,7 @@ export default function App() {
           {/* Brand & Room Context */}
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-              FlipCast
+              obeecreatives
             </span>
             <span className="hidden sm:inline text-slate-300" aria-hidden="true">
               /
@@ -743,33 +743,33 @@ export default function App() {
         </header>
       )}
 
-      {/* Floating Expand Header Handle + Icon-Only Undo/Redo when Header is Collapsed */}
-      {!chromeCollapsed && headerCollapsed && (
-        <div className="fixed top-[max(0.5rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-1 bg-white/95 sm:backdrop-blur-md border border-slate-200/90 shadow-md rounded-full p-1">
+      {/* Floating Top-Left Slim Dock when Header is Collapsed & Left Sidebar is Collapsed/Hidden (0% canvas overlap) */}
+      {!chromeCollapsed && headerCollapsed && (sidebarCollapsed || isCanvasReadOnly) && (
+        <div
+          role="group"
+          aria-label="Kontrol Header dan Undo Redo"
+          className="fixed top-[max(0.625rem,env(safe-area-inset-top))] left-[max(0.5rem,env(safe-area-inset-left))] z-30 min-w-[44px] py-2 px-1.5 rounded-2xl bg-white/95 sm:backdrop-blur-md border border-slate-200/90 shadow-lg flex flex-col items-center gap-1"
+        >
           <button
             type="button"
             onClick={() => setHeaderCollapsed(false)}
-            title="Tampilkan menu header atas"
+            title={`Tampilkan menu header (obeecreatives · ${wb.roomId})`}
             aria-label="Tampilkan Header"
-            className="min-h-[34px] px-3 py-1 rounded-full hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-all active:scale-95"
+            className="w-[34px] h-[34px] rounded-xl inline-flex items-center justify-center text-teal-600 hover:bg-teal-50 transition-all active:scale-95"
           >
-            <PanelTopOpen className="w-4 h-4 text-teal-600 shrink-0" />
-            <span className="font-display font-bold text-slate-900">FlipCast</span>
-            <span className="hidden sm:inline font-mono text-[11px] text-slate-500">
-              {wb.roomId}
-            </span>
+            <PanelTopOpen className="w-4 h-4 shrink-0" />
           </button>
 
           {!isCanvasReadOnly && (
             <>
-              <span className="w-px h-4 bg-slate-200" aria-hidden="true" />
+              <span className="w-5 h-px bg-slate-200 my-0.5" aria-hidden="true" />
               <button
                 type="button"
                 onClick={wb.undo}
                 disabled={!wb.canUndo}
                 title="Urungkan (Ctrl+Z)"
                 aria-label="Undo"
-                className="w-[34px] h-[34px] rounded-full inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+                className="w-[34px] h-[34px] rounded-xl inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
               >
                 <Undo2 className="w-4 h-4" />
               </button>
@@ -779,7 +779,7 @@ export default function App() {
                 disabled={!wb.canRedo}
                 title="Ulangi (Ctrl+Y)"
                 aria-label="Redo"
-                className="w-[34px] h-[34px] rounded-full inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+                className="w-[34px] h-[34px] rounded-xl inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
               >
                 <Redo2 className="w-4 h-4" />
               </button>
@@ -798,27 +798,90 @@ export default function App() {
             : 'px-2.5 py-2 sm:px-4 sm:py-3 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] pb-[max(0.625rem,env(safe-area-inset-bottom))]'
         } relative`}
       >
-        {/* Left Collapsible Mini-Sidebar for Drawing Tools */}
+        {/* Left Collapsible Mini-Sidebar for Drawing Tools (+ Integrated Top Expand/Undo Bar when Header is Collapsed & Sidebar Expanded) */}
         {!chromeCollapsed && !isCanvasReadOnly && (
-          <DrawingToolbar
-            activeTool={activeTool}
-            onSelectTool={setActiveTool}
-            color={color}
-            onSelectColor={setColor}
-            stickyColor={stickyColor}
-            onSelectStickyColor={setStickyColor}
-            strokeSize={strokeSize}
-            onSelectStrokeSize={setStrokeSize}
-            fontSize={fontSize}
-            onSelectFontSize={setFontSize}
-            background={wb.activePage?.background || 'white'}
-            onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
-            onClearPage={wb.clearActivePage}
-            onOpenTemplates={() => setIsTemplatesOpen(true)}
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-            compact={isTabletMode}
-          />
+          sidebarCollapsed ? (
+            <DrawingToolbar
+              activeTool={activeTool}
+              onSelectTool={setActiveTool}
+              color={color}
+              onSelectColor={setColor}
+              stickyColor={stickyColor}
+              onSelectStickyColor={setStickyColor}
+              strokeSize={strokeSize}
+              onSelectStrokeSize={setStrokeSize}
+              fontSize={fontSize}
+              onSelectFontSize={setFontSize}
+              background={wb.activePage?.background || 'white'}
+              onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
+              onClearPage={wb.clearActivePage}
+              onOpenTemplates={() => setIsTemplatesOpen(true)}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+              compact={isTabletMode}
+            />
+          ) : (
+            <div className="shrink-0 flex flex-col gap-1.5 h-full max-h-full z-20">
+              {headerCollapsed && (
+                <div
+                  role="group"
+                  aria-label="Tampilkan Header dan Undo Redo"
+                  className="shrink-0 w-[100px] sm:w-[110px] bg-white border border-slate-200/90 rounded-2xl shadow-sm p-1 flex items-center justify-between"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setHeaderCollapsed(false)}
+                    title={`Tampilkan menu header (obeecreatives · ${wb.roomId})`}
+                    aria-label="Tampilkan Header"
+                    className="w-[30px] sm:w-[32px] h-[34px] rounded-xl inline-flex items-center justify-center text-teal-600 hover:bg-teal-50 transition-colors"
+                  >
+                    <PanelTopOpen className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={wb.undo}
+                    disabled={!wb.canUndo}
+                    title="Urungkan (Ctrl+Z)"
+                    aria-label="Undo"
+                    className="w-[30px] sm:w-[32px] h-[34px] rounded-xl inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+                  >
+                    <Undo2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={wb.redo}
+                    disabled={!wb.canRedo}
+                    title="Ulangi (Ctrl+Y)"
+                    aria-label="Redo"
+                    className="w-[30px] sm:w-[32px] h-[34px] rounded-xl inline-flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
+                  >
+                    <Redo2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+              <div className="flex-1 min-h-0 flex">
+                <DrawingToolbar
+                  activeTool={activeTool}
+                  onSelectTool={setActiveTool}
+                  color={color}
+                  onSelectColor={setColor}
+                  stickyColor={stickyColor}
+                  onSelectStickyColor={setStickyColor}
+                  strokeSize={strokeSize}
+                  onSelectStrokeSize={setStrokeSize}
+                  fontSize={fontSize}
+                  onSelectFontSize={setFontSize}
+                  background={wb.activePage?.background || 'white'}
+                  onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
+                  onClearPage={wb.clearActivePage}
+                  onOpenTemplates={() => setIsTemplatesOpen(true)}
+                  collapsed={sidebarCollapsed}
+                  onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+                  compact={isTabletMode}
+                />
+              </div>
+            </div>
+          )
         )}
 
         {/* Center Stage Column: Optional Mirror Bar + Precision 16:9 Canvas */}
