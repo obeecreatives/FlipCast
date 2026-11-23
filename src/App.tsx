@@ -15,9 +15,11 @@ import {
   PanelTopOpen,
   QrCode,
   Radio,
+  Redo2,
   RotateCw,
   Send,
   Smartphone,
+  Undo2,
 } from 'lucide-react';
 import { ConnectModal } from './components/ConnectModal';
 import { DrawingToolbar } from './components/DrawingToolbar';
@@ -636,10 +638,6 @@ export default function App() {
             onSelectFontSize={setFontSize}
             background={wb.activePage?.background || 'white'}
             onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
-            canUndo={wb.canUndo}
-            canRedo={wb.canRedo}
-            onUndo={wb.undo}
-            onRedo={wb.redo}
             onClearPage={wb.clearActivePage}
             onOpenTemplates={() => setIsTemplatesOpen(true)}
             collapsed={sidebarCollapsed}
@@ -648,8 +646,8 @@ export default function App() {
           />
         )}
 
-        {/* Right Stage Column: Optional Mirror Bar + Precision 16:9 Canvas */}
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col items-center justify-center">
+        {/* Right Stage Column: Optional Mirror Bar + Precision 16:9 Canvas + Persistent Undo/Redo */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col items-center justify-center relative">
           {/* Subtle informational bar on Mirror mode */}
           {!chromeCollapsed && isCanvasReadOnly && (
             <div className="mb-1.5 w-full max-w-[1280px] flex items-center justify-between text-xs text-slate-600 px-1">
@@ -693,6 +691,39 @@ export default function App() {
               />
             </div>
           </div>
+
+          {/* Always-Visible Persistent Floating Undo / Redo Dock (Stays visible even when header/sidebar collapse) */}
+          {!isCanvasReadOnly && (
+            <div
+              role="group"
+              aria-label="Riwayat Coretan Undo dan Redo"
+              className="absolute bottom-2 left-2 sm:bottom-3 sm:left-3 z-30 inline-flex items-center bg-white/95 sm:backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-md p-1 gap-0.5"
+            >
+              <button
+                type="button"
+                onClick={wb.undo}
+                disabled={!wb.canUndo}
+                title="Urungkan coretan terakhir (Ctrl+Z)"
+                aria-label="Undo"
+                className="min-w-[42px] sm:min-w-[44px] min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Undo2 className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Undo</span>
+              </button>
+              <span className="w-px h-5 bg-slate-200" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={wb.redo}
+                disabled={!wb.canRedo}
+                title="Ulangi coretan (Ctrl+Y / Ctrl+Shift+Z)"
+                aria-label="Redo"
+                className="min-w-[42px] sm:min-w-[44px] min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 active:scale-95 disabled:opacity-35 disabled:hover:bg-transparent disabled:active:scale-100 transition-all cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Redo2 className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Redo</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Fullscreen / Collapsed Chrome Floating Trigger (Works on Android, iOS Safari & Desktop) */}

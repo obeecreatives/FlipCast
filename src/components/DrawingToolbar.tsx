@@ -11,13 +11,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PenTool,
-  Redo2,
   Rows3,
   Square,
   StickyNote,
   Trash2,
   Type,
-  Undo2,
 } from 'lucide-react';
 import {
   COLOR_PALETTE,
@@ -44,10 +42,6 @@ interface DrawingToolbarProps {
   onSelectFontSize: (size: FontSizeKey) => void;
   background: PaperBackground;
   onSelectBackground: (bg: PaperBackground) => void;
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
   onClearPage: () => void;
   onOpenTemplates: () => void;
   collapsed: boolean;
@@ -92,10 +86,6 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onSelectFontSize,
   background,
   onSelectBackground,
-  canUndo,
-  canRedo,
-  onUndo,
-  onRedo,
   onClearPage,
   onOpenTemplates,
   collapsed,
@@ -363,28 +353,8 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
 
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 
-        {/* History, Templates & Clear Page */}
+        {/* Templates & Clear Page */}
         <div className="grid grid-cols-2 gap-1">
-          <button
-            type="button"
-            onClick={onUndo}
-            disabled={!canUndo}
-            title="Urungkan (Ctrl+Z)"
-            aria-label="Urungkan"
-            className="min-h-[40px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
-          >
-            <Undo2 className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={onRedo}
-            disabled={!canRedo}
-            title="Ulangi (Ctrl+Y)"
-            aria-label="Ulangi"
-            className="min-h-[40px] rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 disabled:opacity-30 transition-colors"
-          >
-            <Redo2 className="w-4 h-4" />
-          </button>
           <button
             type="button"
             onClick={onOpenTemplates}
