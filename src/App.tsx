@@ -73,8 +73,10 @@ export default function App() {
   const isPointerDrawingRef = useRef(false);
   const leftHoverInsideRef = useRef(false);
   const bottomHoverInsideRef = useRef(false);
+  const extendHoverInsideRef = useRef(false);
   const leftHideTimerRef = useRef<number | null>(null);
   const bottomHideTimerRef = useRef<number | null>(null);
+  const extendHideTimerRef = useRef<number | null>(null);
   const prevImmersiveRef = useRef(false);
   const isLandscape = viewport.width > viewport.height;
   const isShortLandscape = isLandscape && viewport.height <= 560;
@@ -412,6 +414,55 @@ export default function App() {
     scheduleBottomHide,
   ]);
 
+  // Extend Projector Mode (?view=extend): keep board 100% clean, reveal top-right bar ONLY on top-right corner hover
+  useEffect(() => {
+    if (wb.viewMode !== 'extend') {
+      setExtendControlsVisible(false);
+      return;
+    }
+
+    const clearExtendTimer = () => {
+      if (extendHideTimerRef.current !== null) {
+        window.clearTimeout(extendHideTimerRef.current);
+        extendHideTimerRef.current = null;
+      }
+    };
+
+    const scheduleExtendHide = (delayMs = 450) => {
+      clearExtendTimer();
+      if (extendHoverInsideRef.current) return;
+      extendHideTimerRef.current = window.setTimeout(() => {
+        if (!extendHoverInsideRef.current) {
+          setExtendControlsVisible(false);
+        }
+      }, delayMs);
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
+      const inTopRightHotspot = e.clientX >= window.innerWidth - 260 && e.clientY <= 84;
+      if (inTopRightHotspot) {
+        clearExtendTimer();
+        setExtendControlsVisible(true);
+      } else if (!extendHoverInsideRef.current) {
+        scheduleExtendHide(350);
+      }
+    };
+
+    const onWindowLeave = () => {
+      extendHoverInsideRef.current = false;
+      scheduleExtendHide(250);
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    document.addEventListener('mouseleave', onWindowLeave);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('mouseleave', onWindowLeave);
+      clearExtendTimer();
+    };
+  }, [wb.viewMode]);
+
   // Notify immediately when Tablet/HP receives active board state from PC/Laptop Host
   useEffect(() => {
     if (wb.lastHostSyncedAt > 0) {
@@ -436,8 +487,27 @@ export default function App() {
     return (
       <div
         ref={rootRef}
-        onClick={() => setExtendControlsVisible((v) => !v)}
-        className="h-[100dvh] w-screen bg-slate-950 flex items-center justify-center p-2 sm:p-4 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.5rem,env(safe-area-inset-bottom))] relative overflow-hidden group"
+        onClick={(e) => {
+          // On touch devices (no mouse hover), tap toggles controls with auto-hide; on mouse click, hide cleanly
+          if (isTouchPrimary) {
+            setExtendControlsVisible((prev) => {
+              const next = !prev;
+              if (extendHideTimerRef.current !== null) {
+                window.clearTimeout(extendHideTimerRef.current);
+                extendHideTimerRef.current = null;
+              }
+              if (next) {
+                extendHideTimerRef.current = window.setTimeout(() => {
+                  setExtendControlsVisible(false);
+                }, 3500);
+              }
+              return next;
+            });
+          } else if (e.target === e.currentTarget || extendControlsVisible) {
+            setExtendControlsVisible(false);
+          }
+        }}
+        className="h-[100dvh] w-screen bg-slate-950 flex items-center justify-center p-2 sm:p-4 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.5rem,env(safe-area-inset-bottom))] relative overflow-hidden"
       >
         <div className="w-full h-full min-h-0 flex items-center justify-center [container-type:size]">
           <div
@@ -464,13 +534,32 @@ export default function App() {
           </div>
         </div>
 
-        {/* Accessible on both desktop hover AND touch tap */}
+        {/* Auto-hide Floating Controls: 100% hidden until cursor hovers top-right corner (or touch tap) */}
         <div
           onClick={(e) => e.stopPropagation()}
-          className={`fixed top-4 right-4 z-30 flex items-center gap-2 transition-opacity bg-slate-900/95 sm:backdrop-blur-md text-white px-3 py-2 rounded-xl border border-slate-700 shadow-lg ${
+          onMouseEnter={() => {
+            extendHoverInsideRef.current = true;
+            if (extendHideTimerRef.current !== null) {
+              window.clearTimeout(extendHideTimerRef.current);
+              extendHideTimerRef.current = null;
+            }
+            setExtendControlsVisible(true);
+          }}
+          onMouseLeave={() => {
+            extendHoverInsideRef.current = false;
+            if (extendHideTimerRef.current !== null) {
+              window.clearTimeout(extendHideTimerRef.current);
+            }
+            extendHideTimerRef.current = window.setTimeout(() => {
+              if (!extendHoverInsideRef.current) {
+                setExtendControlsVisible(false);
+              }
+            }, 350);
+          }}
+          className={`fixed top-3 right-3 z-30 flex items-center gap-2 transition-all duration-200 ease-out bg-slate-900/95 sm:backdrop-blur-md text-white px-3 py-2 rounded-xl border border-slate-700 shadow-2xl ${
             extendControlsVisible
-              ? 'opacity-100 pointer-events-auto'
-              : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+              ? 'opacity-100 translate-y-0 pointer-events-auto'
+              : 'opacity-0 -translate-y-3 pointer-events-none'
           }`}
         >
           <span className="text-xs font-mono text-slate-300 hidden sm:inline">
@@ -478,8 +567,13 @@ export default function App() {
           </span>
           <button
             type="button"
-            onClick={toggleFullscreen}
-            className="min-h-[44px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-xs font-semibold transition-colors"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              extendHoverInsideRef.current = false;
+              setExtendControlsVisible(false);
+              void toggleFullscreen();
+            }}
+            className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-xs font-semibold transition-colors cursor-pointer"
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             {isFullscreen ? 'Keluar Fullscreen' : 'Fullscreen (F)'}
@@ -487,7 +581,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => wb.setViewMode('projector')}
-            className="min-h-[44px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition-colors"
+            className="min-h-[40px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition-colors cursor-pointer"
           >
             Mode Utama
           </button>
