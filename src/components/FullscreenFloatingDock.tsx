@@ -11,6 +11,7 @@ import {
   Plus,
   QrCode,
   Redo2,
+  Shapes,
   Sparkles,
   Undo2,
 } from 'lucide-react';
@@ -28,6 +29,8 @@ interface FullscreenFloatingDockProps {
   canRedo: boolean;
   smoothWriting: boolean;
   onToggleSmoothWriting: () => void;
+  shapeSnap: boolean;
+  onToggleShapeSnap: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onSelectPage: (pageId: string) => void;
@@ -53,6 +56,8 @@ export const FullscreenFloatingDock: React.FC<FullscreenFloatingDockProps> = ({
   canRedo,
   smoothWriting,
   onToggleSmoothWriting,
+  shapeSnap,
+  onToggleShapeSnap,
   onUndo,
   onRedo,
   onSelectPage,
@@ -194,6 +199,20 @@ export const FullscreenFloatingDock: React.FC<FullscreenFloatingDockProps> = ({
                 }`}
               >
                 <Sparkles className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={onToggleShapeSnap}
+                aria-pressed={shapeSnap}
+                title={`Rapikan Bentuk (${shapeSnap ? 'AKTIF' : 'MATI'})`}
+                aria-label={`Rapikan Bentuk (${shapeSnap ? 'AKTIF' : 'MATI'})`}
+                className={`w-[38px] h-[38px] rounded-xl inline-flex items-center justify-center transition-all active:scale-95 cursor-pointer ${
+                  shapeSnap
+                    ? 'bg-teal-600/25 text-teal-300 ring-1 ring-teal-500/50 hover:bg-teal-600/35'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                }`}
+              >
+                <Shapes className="w-4 h-4" />
               </button>
             </div>
             <span className="w-px h-5 bg-slate-700 shrink-0" aria-hidden="true" />

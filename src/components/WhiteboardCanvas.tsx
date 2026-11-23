@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Move, Pencil, Trash2, X } from 'lucide-react';
+import { Check, Copy, Move, Pencil, RotateCcw, Shapes, Trash2, X } from 'lucide-react';
 import {
   findHitElementId,
   getElementBounds,
   renderBoardCanvas,
   translateElement,
 } from '../lib/canvasRenderer';
+import { detectAndSnapShape, snapLineEndpointAngle } from '../lib/shapeSnap';
 import {
   appendFreehandPoint,
   finalizeFreehandPoints,
@@ -39,6 +40,7 @@ interface WhiteboardCanvasProps {
   strokeSize: StrokeSizeKey;
   fontSize: FontSizeKey;
   smoothWriting?: boolean;
+  shapeSnap?: boolean;
   readOnly: boolean;
   onAddElement: (el: CanvasElement) => void;
   onUpdateElement: (el: CanvasElement) => void;
@@ -79,6 +81,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   strokeSize,
   fontSize,
   smoothWriting = true,
+  shapeSnap = true,
   readOnly,
   onAddElement,
   onUpdateElement,
@@ -97,6 +100,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [textEditor, setTextEditor] = useState<FloatingTextEditorState | null>(null);
   const [stickyEditor, setStickyEditor] = useState<FloatingStickyEditorState | null>(null);
+  const [snapBanner, setSnapBanner] = useState<{
+    elementId: string;
+    label: string;
+    originalStroke: StrokeElement;
+  } | null>(null);
 
   // Refs for low-latency pointer tracking without re-creating handlers
   const isDrawingRef = useRef(false);
@@ -111,6 +119,69 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     openEditorOnTap: boolean;
   } | null>(null);
   const erasedInDragRef = useRef<Set<string>>(new Set());
+
+  // Smart Shape Snap refs (0 ms latency Hold-to-Snap & Quick-Snap)
+  const shapeSnapRef = useRef(shapeSnap);
+  shapeSnapRef.current = shapeSnap;
+  const smoothWritingRef = useRef(smoothWriting);
+  smoothWritingRef.current = smoothWriting;
+  const holdSnapTimerRef = useRef<number | null>(null);
+  const holdSnappedModeRef = useRef<'none' | 'line' | 'shape'>('none');
+  const holdSnappedLabelRef = useRef<string | null>(null);
+  const rawPointsBeforeSnapRef = useRef<number[] | null>(null);
+  const originalStrokeMetaRef = useRef<{
+    type: 'pen' | 'highlighter';
+    color: string;
+    size: number;
+    opacity: number;
+  } | null>(null);
+  const snapBannerTimerRef = useRef<number | null>(null);
+
+  const clearHoldSnapTimer = useCallback(() => {
+    if (holdSnapTimerRef.current !== null) {
+      window.clearTimeout(holdSnapTimerRef.current);
+      holdSnapTimerRef.current = null;
+    }
+  }, []);
+
+  const dismissSnapBanner = useCallback(() => {
+    if (snapBannerTimerRef.current !== null) {
+      window.clearTimeout(snapBannerTimerRef.current);
+      snapBannerTimerRef.current = null;
+    }
+    setSnapBanner(null);
+  }, []);
+
+  const showSnapBanner = useCallback(
+    (elementId: string, label: string, originalStroke: StrokeElement) => {
+      if (snapBannerTimerRef.current !== null) {
+        window.clearTimeout(snapBannerTimerRef.current);
+      }
+      setSnapBanner({ elementId, label, originalStroke });
+      snapBannerTimerRef.current = window.setTimeout(() => {
+        snapBannerTimerRef.current = null;
+        setSnapBanner(null);
+      }, 3500);
+    },
+    []
+  );
+
+  // Clean up hold-snap & banner timers on unmount
+  useEffect(() => {
+    return () => {
+      clearHoldSnapTimer();
+      if (snapBannerTimerRef.current !== null) {
+        window.clearTimeout(snapBannerTimerRef.current);
+      }
+    };
+  }, [clearHoldSnapTimer]);
+
+  // Dismiss "Kembalikan Asli" banner automatically if the snapped element was undone or erased
+  useEffect(() => {
+    if (snapBanner && !elements.some((el) => el.id === snapBanner.elementId)) {
+      dismissSnapBanner();
+    }
+  }, [elements, snapBanner, dismissSnapBanner]);
 
   // Clear selection when leaving Select tool or becoming readOnly
   useEffect(() => {
@@ -508,13 +579,28 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
 
     if (activeTool === 'pen' || activeTool === 'highlighter') {
+      clearHoldSnapTimer();
+      dismissSnapBanner();
+      holdSnappedModeRef.current = 'none';
+      holdSnappedLabelRef.current = null;
+      rawPointsBeforeSnapRef.current = null;
+
       const widthCfg = STROKE_WIDTHS[strokeSize];
+      const strokeSizePx = activeTool === 'pen' ? widthCfg.pen : widthCfg.highlighter;
+      const strokeOpacity = activeTool === 'highlighter' ? 0.32 : 1;
+      originalStrokeMetaRef.current = {
+        type: activeTool,
+        color,
+        size: strokeSizePx,
+        opacity: strokeOpacity,
+      };
+
       const stroke: StrokeElement = {
         id: createId(activeTool === 'pen' ? 'pen' : 'hl'),
         type: activeTool,
         color,
-        size: activeTool === 'pen' ? widthCfg.pen : widthCfg.highlighter,
-        opacity: activeTool === 'highlighter' ? 0.36 : 1,
+        size: strokeSizePx,
+        opacity: strokeOpacity,
         points: [roundCoord(pt.x), roundCoord(pt.y)],
       };
       draftElementRef.current = stroke;
@@ -592,6 +678,25 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     const draft = draftElementRef.current;
     if (!draft) return;
 
+    // Hold-to-Snap active modes: live line endpoint steering or locked closed shape
+    if (holdSnappedModeRef.current === 'line' && draft.type === 'line') {
+      const snappedEnd = snapLineEndpointAngle({ x: draft.x1, y: draft.y1 }, pt);
+      const updated: ShapeElement = {
+        ...draft,
+        x2: snappedEnd.x,
+        y2: snappedEnd.y,
+      };
+      draftElementRef.current = updated;
+      setLiveElement(updated);
+      onEmitLiveStroke(updated);
+      return;
+    }
+
+    if (holdSnappedModeRef.current === 'shape') {
+      // Keep snapped circle/ellipse/rect steady until pointer is lifted
+      return;
+    }
+
     if (draft.type === 'pen' || draft.type === 'highlighter') {
       const nativeEvt = e.nativeEvent as PointerEvent;
       const rawCoalesced =
@@ -615,6 +720,41 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       draftElementRef.current = updated;
       setLiveElement(updated);
       onEmitLiveStroke(updated);
+
+      // Hold-to-Snap: reset 380ms stillness timer on movement when shapeSnap is active
+      if (shapeSnapRef.current) {
+        clearHoldSnapTimer();
+        holdSnapTimerRef.current = window.setTimeout(() => {
+          holdSnapTimerRef.current = null;
+          if (!isDrawingRef.current || holdSnappedModeRef.current !== 'none') return;
+          const current = draftElementRef.current;
+          if (!current || (current.type !== 'pen' && current.type !== 'highlighter')) return;
+
+          const detected = detectAndSnapShape(current.points, true);
+          if (!detected) return;
+
+          rawPointsBeforeSnapRef.current = current.points.slice();
+          const isHl = current.type === 'highlighter';
+          const snappedShape: ShapeElement = {
+            id: current.id,
+            type: detected.type,
+            color: current.color,
+            size: current.size,
+            opacity: isHl ? 0.32 : current.opacity,
+            ...(isHl ? { isHighlight: true } : {}),
+            x1: detected.x1,
+            y1: detected.y1,
+            x2: detected.x2,
+            y2: detected.y2,
+          };
+
+          holdSnappedModeRef.current = detected.type === 'line' ? 'line' : 'shape';
+          holdSnappedLabelRef.current = detected.label;
+          draftElementRef.current = snappedShape;
+          setLiveElement(snappedShape);
+          onEmitLiveStroke(snappedShape, true);
+        }, 380);
+      }
       return;
     }
 
@@ -624,16 +764,23 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       draft.type === 'rect' ||
       draft.type === 'ellipse'
     ) {
-      let x2 = Math.round(pt.x);
-      let y2 = Math.round(pt.y);
+      let x2 = roundCoord(pt.x);
+      let y2 = roundCoord(pt.y);
+
+      // Manual line tool: auto-lock horizontal/vertical within ±7.5° when length >= 16px
+      if (draft.type === 'line') {
+        const snappedEnd = snapLineEndpointAngle({ x: draft.x1, y: draft.y1 }, pt);
+        x2 = snappedEnd.x;
+        y2 = snappedEnd.y;
+      }
 
       // Shift-constrain: perfect circle/square for ellipse/rect
       if (e.shiftKey && (draft.type === 'rect' || draft.type === 'ellipse')) {
         const dx = x2 - draft.x1;
         const dy = y2 - draft.y1;
         const side = Math.max(Math.abs(dx), Math.abs(dy));
-        x2 = Math.max(0, Math.min(VIRTUAL_WIDTH, draft.x1 + Math.sign(dx || 1) * side));
-        y2 = Math.max(0, Math.min(VIRTUAL_HEIGHT, draft.y1 + Math.sign(dy || 1) * side));
+        x2 = roundCoord(Math.max(0, Math.min(VIRTUAL_WIDTH, draft.x1 + Math.sign(dx || 1) * side)));
+        y2 = roundCoord(Math.max(0, Math.min(VIRTUAL_HEIGHT, draft.y1 + Math.sign(dy || 1) * side)));
       }
 
       const updated: ShapeElement = {
@@ -682,6 +829,17 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
     activePointerIdRef.current = null;
+    clearHoldSnapTimer();
+
+    const snappedMode = holdSnappedModeRef.current;
+    const snappedLabel = holdSnappedLabelRef.current;
+    const rawBeforeSnap = rawPointsBeforeSnapRef.current;
+    const origMeta = originalStrokeMetaRef.current;
+
+    holdSnappedModeRef.current = 'none';
+    holdSnappedLabelRef.current = null;
+    rawPointsBeforeSnapRef.current = null;
+    originalStrokeMetaRef.current = null;
 
     const draft = draftElementRef.current;
     draftElementRef.current = null;
@@ -690,6 +848,30 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (!draft) return;
 
+    // 1. If already snapped via Hold-to-Snap, commit snapped shape & offer "Kembalikan Asli"
+    if (snappedMode !== 'none') {
+      onAddElement(draft);
+      if (rawBeforeSnap && origMeta && snappedLabel) {
+        const restoredPts = finalizeFreehandPoints(
+          rawBeforeSnap,
+          null,
+          null,
+          smoothWritingRef.current
+        );
+        const originalStroke: StrokeElement = {
+          id: draft.id,
+          type: origMeta.type,
+          color: origMeta.color,
+          size: origMeta.size,
+          opacity: origMeta.opacity,
+          points: restoredPts,
+        };
+        showSnapBanner(draft.id, snappedLabel, originalStroke);
+      }
+      return;
+    }
+
+    // 2. Freehand stroke (pen / highlighter): try Quick-Snap on pointerUp, else normal Opsi 1 smoothing
     if (draft.type === 'pen' || draft.type === 'highlighter') {
       const captureEnd = e.type === 'pointerup';
       const endPt = captureEnd ? toVirtualCoords(e.clientX, e.clientY) : null;
@@ -699,6 +881,33 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         endPt ? endPt.y : null,
         smoothWriting
       );
+
+      if (shapeSnapRef.current && captureEnd) {
+        const quickDetected = detectAndSnapShape(finalPoints, false);
+        if (quickDetected) {
+          const isHl = draft.type === 'highlighter';
+          const snappedShape: ShapeElement = {
+            id: draft.id,
+            type: quickDetected.type,
+            color: draft.color,
+            size: draft.size,
+            opacity: isHl ? 0.32 : draft.opacity,
+            ...(isHl ? { isHighlight: true } : {}),
+            x1: quickDetected.x1,
+            y1: quickDetected.y1,
+            x2: quickDetected.x2,
+            y2: quickDetected.y2,
+          };
+          const originalStroke: StrokeElement = {
+            ...draft,
+            points: finalPoints,
+          };
+          onAddElement(snappedShape);
+          showSnapBanner(snappedShape.id, quickDetected.label, originalStroke);
+          return;
+        }
+      }
+
       onAddElement({
         ...draft,
         points: finalPoints,
@@ -1023,6 +1232,33 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Floating 3.5s Smart Shape Snap Banner with 1-Click "Kembalikan Asli" */}
+      {snapBanner && !readOnly && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          role="status"
+          aria-live="polite"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] flex items-center gap-2 rounded-xl bg-slate-900/95 text-white pl-3 pr-2 py-1.5 shadow-xl border border-slate-700/90"
+        >
+          <Shapes className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+          <span className="text-xs font-medium whitespace-nowrap">
+            Dirapikan ke <strong className="font-bold text-teal-200">{snapBanner.label}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const orig = snapBanner.originalStroke;
+              dismissSnapBanner();
+              onUpdateElement(orig);
+            }}
+            className="min-h-[30px] px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+          >
+            <RotateCcw className="w-3 h-3 shrink-0" />
+            <span>Kembalikan Asli</span>
+          </button>
         </div>
       )}
     </div>

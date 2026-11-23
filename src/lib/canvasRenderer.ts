@@ -160,15 +160,22 @@ function drawStroke(
 function drawShape(
   ctx: CanvasRenderingContext2D,
   el: ShapeElement,
+  background: PaperBackground,
   isHighlighted: boolean
 ) {
   ctx.save();
+  const isHighlightStroke = Boolean(el.isHighlight);
   ctx.strokeStyle = isHighlighted ? '#EF4444' : el.color;
   ctx.fillStyle = isHighlighted ? '#EF4444' : el.color;
   ctx.lineWidth = el.size;
-  ctx.lineCap = 'round';
+  ctx.lineCap = isHighlightStroke && el.type === 'line' ? 'butt' : 'round';
   ctx.lineJoin = 'round';
-  ctx.globalAlpha = isHighlighted ? 0.55 : el.opacity;
+  if (isHighlightStroke) {
+    ctx.globalAlpha = isHighlighted ? 0.55 : Math.min(el.opacity || 0.32, 0.36);
+    ctx.globalCompositeOperation = background === 'chalkboard' ? 'screen' : 'multiply';
+  } else {
+    ctx.globalAlpha = isHighlighted ? 0.55 : el.opacity;
+  }
 
   if (el.type === 'line') {
     ctx.beginPath();
@@ -587,7 +594,7 @@ function drawSingleElement(
     el.type === 'rect' ||
     el.type === 'ellipse'
   ) {
-    drawShape(ctx, el, isHighlighted);
+    drawShape(ctx, el, background, isHighlighted);
   }
 }
 

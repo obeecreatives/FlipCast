@@ -167,10 +167,11 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         color: el.color.slice(0, 16),
         size: Math.round(el.size),
         opacity: Number(el.opacity.toFixed(2)),
-        x1: Math.round(el.x1),
-        y1: Math.round(el.y1),
-        x2: Math.round(el.x2),
-        y2: Math.round(el.y2),
+        x1: roundCoord(el.x1),
+        y1: roundCoord(el.y1),
+        x2: roundCoord(el.x2),
+        y2: roundCoord(el.y2),
+        ...(el.isHighlight ? { isHighlight: true } : {}),
       };
     }
     return {};

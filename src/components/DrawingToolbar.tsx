@@ -14,6 +14,7 @@ import {
   Pin,
   PinOff,
   Rows3,
+  Shapes,
   Sparkles,
   Square,
   StickyNote,
@@ -47,6 +48,8 @@ interface DrawingToolbarProps {
   onSelectBackground: (bg: PaperBackground) => void;
   smoothWriting: boolean;
   onToggleSmoothWriting: () => void;
+  shapeSnap: boolean;
+  onToggleShapeSnap: () => void;
   onClearPage: () => void;
   onOpenTemplates: () => void;
   collapsed: boolean;
@@ -96,6 +99,8 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onSelectBackground,
   smoothWriting,
   onToggleSmoothWriting,
+  shapeSnap,
+  onToggleShapeSnap,
   onClearPage,
   onOpenTemplates,
   collapsed,
@@ -154,6 +159,21 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
           }`}
         >
           <Sparkles className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleShapeSnap}
+          aria-pressed={shapeSnap}
+          title={`Rapikan Bentuk (${shapeSnap ? 'AKTIF' : 'MATI'})`}
+          aria-label={`Rapikan Bentuk ${shapeSnap ? 'Aktif' : 'Mati'}`}
+          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all active:scale-95 ${
+            shapeSnap
+              ? 'bg-slate-900 text-teal-300 shadow-xs'
+              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+          }`}
+        >
+          <Shapes className="w-3.5 h-3.5" />
         </button>
       </div>
     );
@@ -364,37 +384,70 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
 
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 
-        {/* Auto Handwriting Smoothing Toggle */}
-        <button
-          type="button"
-          onClick={onToggleSmoothWriting}
-          aria-pressed={smoothWriting}
-          title={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'}) — Menghaluskan goresan spidol & stabilo secara otomatis`}
-          aria-label={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
-          className={`w-full px-1.5 py-2 rounded-xl border text-center transition-all active:scale-95 flex flex-col items-center gap-1 ${
-            smoothWriting
-              ? 'bg-teal-50 border-teal-200 text-teal-900 hover:bg-teal-100/70'
-              : 'bg-slate-50 border-slate-200/80 text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          <span className="inline-flex items-center gap-1 text-[10px] font-bold leading-none">
-            <Sparkles
-              className={`w-3 h-3 shrink-0 ${
-                smoothWriting ? 'text-teal-600' : 'text-slate-400'
-              }`}
-            />
-            <span>Haluskan</span>
-          </span>
-          <span
-            className={`px-1.5 py-0.5 rounded-md text-[9px] font-extrabold tracking-wider leading-none ${
+        {/* Smart Writing & Shape Snap Toggles */}
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={onToggleSmoothWriting}
+            aria-pressed={smoothWriting}
+            title={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'}) — Menghaluskan goresan spidol & stabilo secara otomatis`}
+            aria-label={`Haluskan Tulisan (${smoothWriting ? 'AKTIF' : 'MATI'})`}
+            className={`w-full px-1.5 py-1.5 rounded-xl border text-center transition-all active:scale-95 flex flex-col items-center gap-1 ${
               smoothWriting
-                ? 'bg-teal-600 text-white'
-                : 'bg-slate-200 text-slate-600'
+                ? 'bg-teal-50 border-teal-200 text-teal-900 hover:bg-teal-100/70'
+                : 'bg-slate-50 border-slate-200/80 text-slate-600 hover:bg-slate-100'
             }`}
           >
-            {smoothWriting ? 'AKTIF' : 'MATI'}
-          </span>
-        </button>
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold leading-none">
+              <Sparkles
+                className={`w-3 h-3 shrink-0 ${
+                  smoothWriting ? 'text-teal-600' : 'text-slate-400'
+                }`}
+              />
+              <span>Haluskan</span>
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[9px] font-extrabold tracking-wider leading-none ${
+                smoothWriting
+                  ? 'bg-teal-600 text-white'
+                  : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              {smoothWriting ? 'AKTIF' : 'MATI'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleShapeSnap}
+            aria-pressed={shapeSnap}
+            title={`Rapikan Bentuk (${shapeSnap ? 'AKTIF' : 'MATI'}) — Tahan pena 0,4 dtk atau gambar garis, kotak, lingkaran untuk merapikan otomatis`}
+            aria-label={`Rapikan Bentuk (${shapeSnap ? 'AKTIF' : 'MATI'})`}
+            className={`w-full px-1.5 py-1.5 rounded-xl border text-center transition-all active:scale-95 flex flex-col items-center gap-1 ${
+              shapeSnap
+                ? 'bg-slate-900 border-slate-800 text-white hover:bg-slate-800'
+                : 'bg-slate-50 border-slate-200/80 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold leading-tight">
+              <Shapes
+                className={`w-3 h-3 shrink-0 ${
+                  shapeSnap ? 'text-teal-400' : 'text-slate-400'
+                }`}
+              />
+              <span>Rapikan</span>
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[9px] font-extrabold tracking-wider leading-none ${
+                shapeSnap
+                  ? 'bg-teal-500 text-slate-950'
+                  : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              {shapeSnap ? 'AKTIF' : 'MATI'}
+            </span>
+          </button>
+        </div>
 
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 

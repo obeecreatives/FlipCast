@@ -32,6 +32,7 @@ import { exportAllPagesAsPDF, exportPageAsPNG } from './lib/exportUtils';
 import { FontSizeKey, STICKY_COLORS, StrokeSizeKey, ToolType } from './types/whiteboard';
 
 const SMOOTH_WRITING_STORAGE_KEY = 'flipcast_smooth_writing_v1';
+const SHAPE_SNAP_STORAGE_KEY = 'flipchart_shape_snap_v1';
 
 export default function App() {
   const wb = useWhiteboardSync();
@@ -51,12 +52,33 @@ export default function App() {
       return true;
     }
   });
+  const [shapeSnap, setShapeSnap] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const saved = window.localStorage.getItem(SHAPE_SNAP_STORAGE_KEY);
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
 
   const handleToggleSmoothWriting = useCallback(() => {
     setSmoothWriting((prev) => {
       const next = !prev;
       try {
         window.localStorage.setItem(SMOOTH_WRITING_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage quota / privacy mode errors
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleShapeSnap = useCallback(() => {
+    setShapeSnap((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(SHAPE_SNAP_STORAGE_KEY, String(next));
       } catch {
         // Ignore storage quota / privacy mode errors
       }
@@ -1097,6 +1119,8 @@ export default function App() {
               onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
               smoothWriting={smoothWriting}
               onToggleSmoothWriting={handleToggleSmoothWriting}
+              shapeSnap={shapeSnap}
+              onToggleShapeSnap={handleToggleShapeSnap}
               onClearPage={wb.clearActivePage}
               onOpenTemplates={() => setIsTemplatesOpen(true)}
               collapsed={sidebarCollapsed}
@@ -1158,6 +1182,8 @@ export default function App() {
                   onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
                   smoothWriting={smoothWriting}
                   onToggleSmoothWriting={handleToggleSmoothWriting}
+                  shapeSnap={shapeSnap}
+                  onToggleShapeSnap={handleToggleShapeSnap}
                   onClearPage={wb.clearActivePage}
                   onOpenTemplates={() => setIsTemplatesOpen(true)}
                   collapsed={sidebarCollapsed}
@@ -1207,6 +1233,7 @@ export default function App() {
                 strokeSize={strokeSize}
                 fontSize={fontSize}
                 smoothWriting={smoothWriting}
+                shapeSnap={shapeSnap}
                 readOnly={isCanvasReadOnly}
                 onAddElement={wb.addElement}
                 onUpdateElement={wb.updateElement}
@@ -1271,6 +1298,8 @@ export default function App() {
                   onSelectBackground={(bg) => void wb.setActivePageBackground(bg)}
                   smoothWriting={smoothWriting}
                   onToggleSmoothWriting={handleToggleSmoothWriting}
+                  shapeSnap={shapeSnap}
+                  onToggleShapeSnap={handleToggleShapeSnap}
                   onClearPage={wb.clearActivePage}
                   onOpenTemplates={() => setIsTemplatesOpen(true)}
                   collapsed={false}
@@ -1283,7 +1312,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Bottom Floating Quick Dock (Undo/Redo + Smoothing + Flipchart + QR + PDF + Pin + Exit) */}
+            {/* Bottom Floating Quick Dock (Undo/Redo + Smoothing + Shape Snap + Flipchart + QR + PDF + Pin + Exit) */}
             <FullscreenFloatingDock
               visible={bottomFloatOpen || bottomFloatPinned || bottomPopoverOpen}
               pinned={bottomFloatPinned}
@@ -1296,6 +1325,8 @@ export default function App() {
               canRedo={wb.canRedo}
               smoothWriting={smoothWriting}
               onToggleSmoothWriting={handleToggleSmoothWriting}
+              shapeSnap={shapeSnap}
+              onToggleShapeSnap={handleToggleShapeSnap}
               onUndo={wb.undo}
               onRedo={wb.redo}
               onSelectPage={(id) => void wb.selectPage(id)}

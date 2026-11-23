@@ -1,0 +1,3 @@
+[install]
+# Prevent gVisor/container socket stalls during cold-start bun install
+networkConcurrency = 8

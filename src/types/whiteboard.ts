@@ -95,6 +95,7 @@ export interface ShapeElement extends BaseElement {
   y1: number;
   x2: number;
   y2: number;
+  isHighlight?: boolean;
 }
 
 export interface TextElement extends BaseElement {
