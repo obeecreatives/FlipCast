@@ -41,7 +41,7 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<ToolType>('pen');
   const [color, setColor] = useState<string>('#0F294A');
   const [stickyColor, setStickyColor] = useState<string>(STICKY_COLORS[0].bg);
-  const [strokeSize, setStrokeSize] = useState<StrokeSizeKey>('medium');
+  const [strokeSize, setStrokeSize] = useState<StrokeSizeKey>('thin');
   const [fontSize, setFontSize] = useState<FontSizeKey>('md');
   const [smoothWriting, setSmoothWriting] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
