@@ -1,5 +1,6 @@
 import {
   CanvasElement,
+  ImageElement,
   PaperBackground,
   ShapeElement,
   STICKY_COLORS,
@@ -10,6 +11,134 @@ import {
   VIRTUAL_WIDTH,
 } from '../types/whiteboard';
 import { roundCoord } from './strokeSmoothing';
+
+export interface LaserTrailPoint {
+  x: number;
+  y: number;
+  t: number;
+}
+
+const IMAGE_CACHE_MAX = 48;
+const imageElementCache = new Map<string, HTMLImageElement>();
+const imageReadyListeners = new Set<() => void>();
+
+export function subscribeImageCacheReady(listener: () => void): () => void {
+  imageReadyListeners.add(listener);
+  return () => {
+    imageReadyListeners.delete(listener);
+  };
+}
+
+function getCachedImage(src: string): HTMLImageElement | null {
+  if (!src) return null;
+  const existing = imageElementCache.get(src);
+  if (existing) {
+    return existing.complete && existing.naturalWidth > 0 ? existing : null;
+  }
+
+  if (imageElementCache.size >= IMAGE_CACHE_MAX) {
+    const firstKey = imageElementCache.keys().next().value;
+    if (firstKey) imageElementCache.delete(firstKey);
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    imageReadyListeners.forEach((fn) => fn());
+  };
+  img.src = src;
+  imageElementCache.set(src, img);
+  return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+/**
+ * Ensures every ImageElement across pages is decoded before PNG/PDF export.
+ */
+export async function preloadElementsImages(elements: CanvasElement[]): Promise<void> {
+  const imageEls = elements.filter((el): el is ImageElement => el.type === 'image' && Boolean(el.src));
+  if (imageEls.length === 0) return;
+
+  await Promise.all(
+    imageEls.map(
+      (el) =>
+        new Promise<void>((resolve) => {
+          const existing = imageElementCache.get(el.src);
+          if (existing && existing.complete && existing.naturalWidth > 0) {
+            resolve();
+            return;
+          }
+          const img = existing || new Image();
+          const done = () => resolve();
+          img.addEventListener('load', done, { once: true });
+          img.addEventListener('error', done, { once: true });
+          if (!existing) {
+            img.src = el.src;
+            imageElementCache.set(el.src, img);
+          }
+          if (img.complete) resolve();
+        })
+    )
+  );
+}
+
+/**
+ * Renders a glowing red fading Laser Pointer trail (temporary, never saved to board).
+ */
+export function drawLaserTrail(
+  ctx: CanvasRenderingContext2D,
+  trail: LaserTrailPoint[],
+  now: number,
+  maxAgeMs = 1400
+) {
+  const active = trail.filter((p) => now - p.t <= maxAgeMs);
+  if (active.length === 0) return;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Soft outer red laser glow along segments with age-based taper
+  for (let i = 1; i < active.length; i++) {
+    const p0 = active[i - 1];
+    const p1 = active[i];
+    const age = now - p1.t;
+    const life = Math.max(0, 1 - age / maxAgeMs);
+    if (life <= 0.02) continue;
+
+    // Outer halo
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = `rgba(239, 68, 68, ${(life * 0.42).toFixed(3)})`;
+    ctx.lineWidth = Math.max(2, 13 * life);
+    ctx.stroke();
+
+    // Inner bright core
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${(life * 0.92).toFixed(3)})`;
+    ctx.lineWidth = Math.max(1.2, 4.5 * life);
+    ctx.stroke();
+  }
+
+  // Crisp glowing laser pointer tip at newest coordinate
+  const tip = active[active.length - 1];
+  const tipLife = Math.max(0, 1 - (now - tip.t) / maxAgeMs);
+  if (tipLife > 0.05) {
+    const haloGrad = ctx.createRadialGradient(tip.x, tip.y, 1, tip.x, tip.y, 18 * tipLife + 4);
+    haloGrad.addColorStop(0, `rgba(255, 255, 255, ${Math.min(1, tipLife * 1.1).toFixed(3)})`);
+    haloGrad.addColorStop(0.28, `rgba(239, 68, 68, ${(tipLife * 0.92).toFixed(3)})`);
+    haloGrad.addColorStop(0.65, `rgba(239, 68, 68, ${(tipLife * 0.35).toFixed(3)})`);
+    haloGrad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+
+    ctx.fillStyle = haloGrad;
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, 18 * tipLife + 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
 
 export function drawPaperBackground(
   ctx: CanvasRenderingContext2D,
@@ -450,6 +579,73 @@ function drawStickyNote(
   ctx.restore();
 }
 
+function drawImageElement(
+  ctx: CanvasRenderingContext2D,
+  el: ImageElement,
+  isHighlighted: boolean
+) {
+  ctx.save();
+  ctx.globalAlpha = isHighlighted ? 0.65 : el.opacity;
+
+  // Soft elevation frame around inserted screenshot / diagram
+  ctx.shadowColor = 'rgba(15, 23, 42, 0.12)';
+  ctx.shadowBlur = 12;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 4;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(el.x, el.y, el.width, el.height, 8);
+  } else {
+    ctx.rect(el.x, el.y, el.width, el.height);
+  }
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Clip rounded corners for crisp image presentation
+  ctx.save();
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(el.x, el.y, el.width, el.height, 8);
+  } else {
+    ctx.rect(el.x, el.y, el.width, el.height);
+  }
+  ctx.clip();
+
+  const img = getCachedImage(el.src);
+  if (img) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, el.x, el.y, el.width, el.height);
+  } else {
+    ctx.fillStyle = '#F1F5F9';
+    ctx.fillRect(el.x, el.y, el.width, el.height);
+    ctx.fillStyle = '#64748B';
+    ctx.font = '600 14px "DM Sans", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Memuat gambar...', el.x + el.width / 2, el.y + el.height / 2);
+  }
+  ctx.restore();
+
+  // Subtle crisp border (red when hovered by eraser)
+  ctx.strokeStyle = isHighlighted ? '#EF4444' : 'rgba(148, 163, 184, 0.55)';
+  ctx.lineWidth = isHighlighted ? 3 : 1.5;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(el.x, el.y, el.width, el.height, 8);
+  } else {
+    ctx.rect(el.x, el.y, el.width, el.height);
+  }
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 export interface ElementBounds {
   x: number;
   y: number;
@@ -461,7 +657,7 @@ export function getElementBounds(
   el: CanvasElement,
   ctx: CanvasRenderingContext2D | null
 ): ElementBounds {
-  if (el.type === 'sticky') {
+  if (el.type === 'sticky' || el.type === 'image') {
     return { x: el.x, y: el.y, width: el.width, height: el.height };
   }
   if (el.type === 'text') {
@@ -557,7 +753,7 @@ export function translateElement(
     }
     return { ...el, points: nextPts };
   }
-  if (el.type === 'text' || el.type === 'sticky') {
+  if (el.type === 'text' || el.type === 'sticky' || el.type === 'image') {
     return {
       ...el,
       x: Math.round(el.x + clampedDx),
@@ -628,7 +824,12 @@ function drawSingleElement(
   isHighlighted: boolean,
   showTextFrames: boolean
 ) {
-  if (el.type === 'pen' || el.type === 'highlighter') {
+  if (el.type === 'laser') {
+    return;
+  }
+  if (el.type === 'image') {
+    drawImageElement(ctx, el, isHighlighted);
+  } else if (el.type === 'pen' || el.type === 'highlighter') {
     drawStroke(ctx, el, background, isHighlighted);
   } else if (el.type === 'text') {
     drawTextElement(ctx, el, isHighlighted, showTextFrames);
@@ -652,6 +853,9 @@ export function renderBoardCanvas(
   options?: {
     liveElement?: CanvasElement | null;
     remoteLiveElement?: CanvasElement | null;
+    localLaserTrail?: LaserTrailPoint[];
+    remoteLaserTrail?: LaserTrailPoint[];
+    laserNow?: number;
     hoveredEraseId?: string | null;
     editingTextId?: string | null;
     selectedElementId?: string | null;
@@ -663,7 +867,28 @@ export function renderBoardCanvas(
 
   let selectedElementForOverlay: CanvasElement | null = null;
 
+  // Pass 1: Draw inserted images as the base media layer so teachers can ALWAYS write over screenshots
   for (const el of elements) {
+    if (el.type !== 'image') continue;
+    if (options?.hiddenElementId && el.id === options.hiddenElementId) continue;
+    const isHighlighted = options?.hoveredEraseId === el.id;
+    drawImageElement(ctx, el, isHighlighted);
+    if (options?.selectedElementId && el.id === options.selectedElementId) {
+      selectedElementForOverlay = el;
+    }
+  }
+
+  // If currently dragging an image live, draw it right above static images and below ink
+  if (options?.liveElement && options.liveElement.type === 'image') {
+    drawImageElement(ctx, options.liveElement, false);
+    if (options?.selectedElementId && options.liveElement.id === options.selectedElementId) {
+      selectedElementForOverlay = options.liveElement;
+    }
+  }
+
+  // Pass 2: Draw all ink strokes, vector shapes, text, and sticky notes cleanly on top of images
+  for (const el of elements) {
+    if (el.type === 'image' || el.type === 'laser') continue;
     if (options?.editingTextId && el.id === options.editingTextId) continue;
     if (options?.hiddenElementId && el.id === options.hiddenElementId) continue;
     const isHighlighted = options?.hoveredEraseId === el.id;
@@ -673,11 +898,15 @@ export function renderBoardCanvas(
     }
   }
 
-  if (options?.remoteLiveElement) {
+  if (options?.remoteLiveElement && options.remoteLiveElement.type !== 'laser') {
     drawSingleElement(ctx, options.remoteLiveElement, background, false, false);
   }
 
-  if (options?.liveElement) {
+  if (
+    options?.liveElement &&
+    options.liveElement.type !== 'image' &&
+    options.liveElement.type !== 'laser'
+  ) {
     drawSingleElement(ctx, options.liveElement, background, false, false);
     if (options?.selectedElementId && options.liveElement.id === options.selectedElementId) {
       selectedElementForOverlay = options.liveElement;
@@ -686,6 +915,15 @@ export function renderBoardCanvas(
 
   if (selectedElementForOverlay) {
     drawSelectionOverlay(ctx, getElementBounds(selectedElementForOverlay, ctx));
+  }
+
+  // Pass 3: Ephemeral glowing Laser Pointer trails (always topmost, never saved)
+  const laserNow = options?.laserNow ?? performance.now();
+  if (options?.remoteLaserTrail && options.remoteLaserTrail.length > 0) {
+    drawLaserTrail(ctx, options.remoteLaserTrail, laserNow);
+  }
+  if (options?.localLaserTrail && options.localLaserTrail.length > 0) {
+    drawLaserTrail(ctx, options.localLaserTrail, laserNow);
   }
 }
 
@@ -711,7 +949,7 @@ export function findHitElementId(
     const el = elements[i];
     if (onlyType && el.type !== onlyType) continue;
 
-    if (el.type === 'sticky') {
+    if (el.type === 'sticky' || el.type === 'image') {
       if (
         vx >= el.x - 6 &&
         vx <= el.x + el.width + 6 &&

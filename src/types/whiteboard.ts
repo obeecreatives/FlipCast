@@ -5,10 +5,11 @@ export const MAX_PAGES = 50;
 export const MAX_ELEMENTS_PER_PAGE = 400;
 export const MAX_TEMPLATE_BLOCKS = 20;
 
-export type ViewMode = 'projector' | 'extend' | 'tablet';
+export type ViewMode = 'projector' | 'extend' | 'tablet' | 'viewer';
 
 export type ToolType =
   | 'select'
+  | 'laser'
   | 'pen'
   | 'highlighter'
   | 'text'
@@ -119,7 +120,32 @@ export interface StickyNoteElement extends BaseElement {
   fontSize: number;
 }
 
-export type CanvasElement = StrokeElement | ShapeElement | TextElement | StickyNoteElement;
+export interface ImageElement extends BaseElement {
+  type: 'image';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Compact compressed data URL (WebP/JPEG) for zero-server sync & export */
+  src: string;
+  naturalWidth: number;
+  naturalHeight: number;
+}
+
+export interface LaserElement extends BaseElement {
+  type: 'laser';
+  /** Flat ephemeral virtual coordinates [x0, y0, x1, y1, ...] */
+  points: number[];
+  updatedAtMs?: number;
+}
+
+export type CanvasElement =
+  | StrokeElement
+  | ShapeElement
+  | TextElement
+  | StickyNoteElement
+  | ImageElement
+  | LaserElement;
 
 export interface FlipchartPage {
   pageId: string;

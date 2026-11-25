@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import {
   ArrowUpRight,
   Circle,
+  Crosshair,
   Eraser,
   Grid3X3,
   Highlighter,
+  ImagePlus,
   LayoutTemplate,
   Minus,
   MousePointer2,
@@ -52,6 +54,7 @@ interface DrawingToolbarProps {
   onToggleShapeSnap: () => void;
   onClearPage: () => void;
   onOpenTemplates: () => void;
+  onInsertImageClick: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
   compact?: boolean;
@@ -66,6 +69,7 @@ const TOOLS: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { id: 'select', label: 'Pilih & Geser', icon: MousePointer2 },
+  { id: 'laser', label: 'Laser Pointer Sementara (L)', icon: Crosshair },
   { id: 'pen', label: 'Spidol', icon: PenTool },
   { id: 'highlighter', label: 'Stabilo', icon: Highlighter },
   { id: 'text', label: 'Teks', icon: Type },
@@ -103,6 +107,7 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
   onToggleShapeSnap,
   onClearPage,
   onOpenTemplates,
+  onInsertImageClick,
   collapsed,
   onToggleCollapse,
   floatingMode = false,
@@ -221,7 +226,7 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
 
       {/* Scrollable Vertical Rail (Fits without scrolling on Desktop/Tablet, scrolls cleanly on short Phone Landscape) */}
       <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar p-1.5 space-y-2">
-        {/* 10 Drawing Tools in Crisp 2-Column Grid */}
+        {/* 12 Tools & Media Actions in Balanced 2-Column Grid (6x2) */}
         <div
           className="grid grid-cols-2 gap-1"
           role="toolbar"
@@ -230,6 +235,7 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
           {TOOLS.map((tool) => {
             const Icon = tool.icon;
             const isActive = activeTool === tool.id;
+            const isLaser = tool.id === 'laser';
             return (
               <button
                 key={tool.id}
@@ -237,9 +243,13 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
                 onClick={() => onSelectTool(tool.id)}
                 title={tool.label}
                 aria-label={tool.label}
-                className={`min-h-[42px] w-full rounded-xl flex items-center justify-center transition-all active:scale-95 ${
+                className={`min-h-[40px] w-full rounded-xl flex items-center justify-center transition-all active:scale-95 ${
                   isActive
-                    ? 'bg-slate-900 text-white shadow-xs'
+                    ? isLaser
+                      ? 'bg-red-600 text-white shadow-xs'
+                      : 'bg-slate-900 text-white shadow-xs'
+                    : isLaser
+                    ? 'text-red-600 hover:bg-red-50'
                     : 'text-slate-700 hover:bg-slate-100'
                 }`}
               >
@@ -247,6 +257,15 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={onInsertImageClick}
+            title="Sisipkan Gambar / Screenshot Soal (bisa juga Ctrl+V atau Drag & Drop)"
+            aria-label="Sisipkan Gambar"
+            className="min-h-[40px] w-full rounded-xl flex items-center justify-center text-teal-700 hover:bg-teal-50 transition-all active:scale-95"
+          >
+            <ImagePlus className="w-4 h-4 shrink-0" />
+          </button>
         </div>
 
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
@@ -295,7 +314,13 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
                     type="button"
                     onClick={() => {
                       onSelectColor(swatch.hex);
-                      if (activeTool === 'eraser' || activeTool === 'select') onSelectTool('pen');
+                      if (
+                        activeTool === 'eraser' ||
+                        activeTool === 'select' ||
+                        activeTool === 'laser'
+                      ) {
+                        onSelectTool('pen');
+                      }
                     }}
                     title={swatch.label}
                     aria-label={`Warna ${swatch.label}`}
@@ -319,9 +344,13 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = React.memo(({
         <div className="h-px bg-slate-200/80 mx-1" aria-hidden="true" />
 
         {/* Contextual Size / Mode Indicator */}
-        {activeTool === 'select' ? (
+        {activeTool === 'laser' ? (
+          <div className="px-1.5 py-1.5 rounded-xl bg-red-50 border border-red-200/80 text-red-700 text-[10px] font-semibold text-center leading-tight">
+            Laser merah memudar otomatis
+          </div>
+        ) : activeTool === 'select' ? (
           <div className="px-1.5 py-1.5 rounded-xl bg-teal-50 text-teal-800 text-[10px] font-semibold text-center leading-tight">
-            Ketuk & geser objek
+            Ketuk & geser objek / gambar
           </div>
         ) : activeTool === 'sticky' ? (
           <div className="px-1.5 py-1.5 rounded-xl bg-amber-50 text-amber-900 text-[10px] font-semibold text-center leading-tight">

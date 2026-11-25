@@ -183,6 +183,34 @@ export function sanitizeElementsForFirestore(elements: CanvasElement[]): Record<
         ...(el.isHighlight ? { isHighlight: true } : {}),
       };
     }
+    if (el.type === 'image') {
+      return {
+        id: el.id.slice(0, 64),
+        type: 'image',
+        color: el.color.slice(0, 16),
+        size: Math.round(el.size),
+        opacity: Number(el.opacity.toFixed(2)),
+        x: Math.round(el.x),
+        y: Math.round(el.y),
+        width: Math.max(40, Math.min(1280, Math.round(el.width))),
+        height: Math.max(40, Math.min(720, Math.round(el.height))),
+        naturalWidth: Math.max(1, Math.round(el.naturalWidth)),
+        naturalHeight: Math.max(1, Math.round(el.naturalHeight)),
+        src: el.src.length <= 240_000 ? el.src : '',
+      };
+    }
+    if (el.type === 'laser') {
+      const pts = el.points.slice(-64).map((n) => roundCoord(n));
+      return {
+        id: el.id.slice(0, 64),
+        type: 'laser',
+        color: el.color.slice(0, 16),
+        size: Math.round(el.size),
+        opacity: 1,
+        points: pts,
+        updatedAtMs: typeof el.updatedAtMs === 'number' ? el.updatedAtMs : Date.now(),
+      };
+    }
     return {};
   });
 }

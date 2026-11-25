@@ -1,11 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Move, Pencil, RotateCcw, Shapes, Trash2, X } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  ImagePlus,
+  Move,
+  Pencil,
+  RotateCcw,
+  Shapes,
+  Trash2,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import {
   findHitElementId,
   getElementBounds,
+  LaserTrailPoint,
   renderBoardCanvas,
+  subscribeImageCacheReady,
   translateElement,
 } from '../lib/canvasRenderer';
+import { createImageElementFromBlob } from '../lib/imageUtils';
 import { detectAndSnapShape, snapLineEndpointAngle } from '../lib/shapeSnap';
 import {
   appendFreehandPoint,
@@ -16,6 +31,8 @@ import {
   CanvasElement,
   createId,
   FontSizeKey,
+  ImageElement,
+  LaserElement,
   PaperBackground,
   ShapeElement,
   STICKY_COLORS,
@@ -46,6 +63,7 @@ interface WhiteboardCanvasProps {
   onUpdateElement: (el: CanvasElement) => void;
   onRemoveElement: (id: string) => void;
   onEmitLiveStroke: (el: CanvasElement | null, force?: boolean) => void;
+  onNotice?: (msg: string) => void;
 }
 
 interface FloatingTextEditorState {
@@ -87,6 +105,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   onUpdateElement,
   onRemoveElement,
   onEmitLiveStroke,
+  onNotice,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -100,6 +119,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [textEditor, setTextEditor] = useState<FloatingTextEditorState | null>(null);
   const [stickyEditor, setStickyEditor] = useState<FloatingStickyEditorState | null>(null);
+  const [imageRenderTick, setImageRenderTick] = useState(0);
+  const [laserFrameTick, setLaserFrameTick] = useState(0);
+  const [isDragOverImage, setIsDragOverImage] = useState(false);
   const [snapBanner, setSnapBanner] = useState<{
     elementId: string;
     label: string;
@@ -137,6 +159,75 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   } | null>(null);
   const snapBannerTimerRef = useRef<number | null>(null);
 
+  // Ephemeral Laser Pointer trail refs (0 CPU when idle; fades over 1.4s)
+  const localLaserTrailRef = useRef<LaserTrailPoint[]>([]);
+  const remoteLaserTrailRef = useRef<LaserTrailPoint[]>([]);
+  const laserRafRef = useRef<number | null>(null);
+  const lastRemoteLaserSigRef = useRef<string>('');
+  const lastRemoteLaserIdRef = useRef<string>('');
+
+  const ensureLaserLoop = useCallback(() => {
+    if (laserRafRef.current !== null) return;
+    const step = () => {
+      const now = performance.now();
+      const maxAge = 1450;
+      if (localLaserTrailRef.current.length > 0) {
+        localLaserTrailRef.current = localLaserTrailRef.current.filter((p) => now - p.t <= maxAge);
+      }
+      if (remoteLaserTrailRef.current.length > 0) {
+        remoteLaserTrailRef.current = remoteLaserTrailRef.current.filter((p) => now - p.t <= maxAge);
+      }
+      setLaserFrameTick((t) => (t + 1) % 1_000_000);
+      if (localLaserTrailRef.current.length > 0 || remoteLaserTrailRef.current.length > 0) {
+        laserRafRef.current = window.requestAnimationFrame(step);
+      } else {
+        laserRafRef.current = null;
+      }
+    };
+    laserRafRef.current = window.requestAnimationFrame(step);
+  }, []);
+
+  // Redraw automatically when any pasted/inserted image finishes decoding
+  useEffect(() => {
+    return subscribeImageCacheReady(() => {
+      setImageRenderTick((t) => t + 1);
+    });
+  }, []);
+
+  // Feed incoming remote Laser Pointer packets into the smooth fading trail
+  useEffect(() => {
+    if (!remoteLiveElement || remoteLiveElement.type !== 'laser') return;
+    const pts = remoteLiveElement.points;
+    if (!Array.isArray(pts) || pts.length < 2) return;
+
+    const sig = `${remoteLiveElement.id}:${remoteLiveElement.updatedAtMs || 0}:${pts.length}:${pts[pts.length - 2]},${pts[pts.length - 1]}`;
+    if (sig === lastRemoteLaserSigRef.current) return;
+    lastRemoteLaserSigRef.current = sig;
+
+    const now = performance.now();
+    if (remoteLiveElement.id !== lastRemoteLaserIdRef.current) {
+      lastRemoteLaserIdRef.current = remoteLiveElement.id;
+      remoteLaserTrailRef.current = [];
+    }
+
+    const trail = remoteLaserTrailRef.current;
+    const totalPairs = Math.floor(pts.length / 2);
+    const startPair = Math.max(0, totalPairs - 12);
+    for (let i = startPair; i < totalPairs; i++) {
+      const x = pts[i * 2];
+      const y = pts[i * 2 + 1];
+      const last = trail[trail.length - 1];
+      if (!last || Math.hypot(x - last.x, y - last.y) >= 1.5) {
+        const ageOffset = (totalPairs - 1 - i) * 14;
+        trail.push({ x, y, t: now - ageOffset });
+      }
+    }
+    if (trail.length > 72) {
+      remoteLaserTrailRef.current = trail.slice(-72);
+    }
+    ensureLaserLoop();
+  }, [remoteLiveElement, ensureLaserLoop]);
+
   const clearHoldSnapTimer = useCallback(() => {
     if (holdSnapTimerRef.current !== null) {
       window.clearTimeout(holdSnapTimerRef.current);
@@ -166,12 +257,15 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     []
   );
 
-  // Clean up hold-snap & banner timers on unmount
+  // Clean up hold-snap, laser rAF & banner timers on unmount
   useEffect(() => {
     return () => {
       clearHoldSnapTimer();
       if (snapBannerTimerRef.current !== null) {
         window.clearTimeout(snapBannerTimerRef.current);
+      }
+      if (laserRafRef.current !== null) {
+        window.cancelAnimationFrame(laserRafRef.current);
       }
     };
   }, [clearHoldSnapTimer]);
@@ -282,6 +376,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     renderBoardCanvas(ctx, background, elements, {
       liveElement,
       remoteLiveElement,
+      localLaserTrail: localLaserTrailRef.current,
+      remoteLaserTrail: remoteLaserTrailRef.current,
+      laserNow: performance.now(),
       hoveredEraseId: activeTool === 'eraser' ? hoveredEraseId : null,
       editingTextId: textEditor?.id ?? stickyEditor?.id ?? null,
       selectedElementId: !readOnly && activeTool === 'select' ? selectedId : null,
@@ -302,6 +399,8 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     activeTool,
     readOnly,
     displaySize,
+    imageRenderTick,
+    laserFrameTick,
   ]);
 
   // Focus textarea when opening text editor
@@ -447,6 +546,90 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     [elements, onUpdateElement, selectedId]
   );
 
+  const handleResizeSelectedImage = useCallback(
+    (scaleFactor: number) => {
+      if (!selectedId) return;
+      const found = elements.find(
+        (el): el is ImageElement => el.id === selectedId && el.type === 'image'
+      );
+      if (!found) return;
+      const aspect =
+        found.naturalWidth && found.naturalHeight
+          ? found.naturalWidth / found.naturalHeight
+          : found.width / Math.max(1, found.height);
+      const maxW = VIRTUAL_WIDTH - 32;
+      const maxH = VIRTUAL_HEIGHT - 32;
+      let nextW = Math.round(found.width * scaleFactor);
+      let nextH = Math.round(nextW / Math.max(0.1, aspect));
+
+      if (nextW > maxW) {
+        nextW = maxW;
+        nextH = Math.round(nextW / Math.max(0.1, aspect));
+      }
+      if (nextH > maxH) {
+        nextH = maxH;
+        nextW = Math.round(nextH * Math.max(0.1, aspect));
+      }
+      if (nextW < 120) {
+        nextW = 120;
+        nextH = Math.max(60, Math.round(nextW / Math.max(0.1, aspect)));
+      }
+      if (nextH < 80) {
+        nextH = 80;
+        nextW = Math.max(100, Math.round(nextH * Math.max(0.1, aspect)));
+      }
+
+      const cx = found.x + found.width / 2;
+      const cy = found.y + found.height / 2;
+      const nextX = Math.max(16, Math.min(VIRTUAL_WIDTH - nextW - 16, Math.round(cx - nextW / 2)));
+      const nextY = Math.max(16, Math.min(VIRTUAL_HEIGHT - nextH - 16, Math.round(cy - nextH / 2)));
+
+      onUpdateElement({
+        ...found,
+        x: nextX,
+        y: nextY,
+        width: nextW,
+        height: nextH,
+      });
+    },
+    [elements, onUpdateElement, selectedId]
+  );
+
+  const handleDragOverCanvas = (e: React.DragEvent<HTMLDivElement>) => {
+    if (readOnly) return;
+    const hasFiles = Array.from(e.dataTransfer?.types || []).includes('Files');
+    if (!hasFiles) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragOverImage) setIsDragOverImage(true);
+  };
+
+  const handleDragLeaveCanvas = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setIsDragOverImage(false);
+  };
+
+  const handleDropOnCanvas = async (e: React.DragEvent<HTMLDivElement>) => {
+    if (readOnly) return;
+    e.preventDefault();
+    setIsDragOverImage(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    const imgFile = files.find((f) => f.type.startsWith('image/'));
+    if (!imgFile) return;
+
+    try {
+      const dropPt = toVirtualCoords(e.clientX, e.clientY);
+      const imgEl = await createImageElementFromBlob(imgFile, {
+        centerX: dropPt.x,
+        centerY: dropPt.y,
+      });
+      onAddElement(imgEl);
+      onNotice?.('Gambar disisipkan — coret langsung di atasnya atau pilih untuk geser/ubah ukuran');
+    } catch (err) {
+      onNotice?.(err instanceof Error ? err.message : 'Gagal memuat gambar');
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (readOnly) return;
     if (e.button !== 0 && e.pointerType === 'mouse') return;
@@ -578,6 +761,26 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
+    if (activeTool === 'laser') {
+      const now = performance.now();
+      const sx = roundCoord(pt.x);
+      const sy = roundCoord(pt.y);
+      localLaserTrailRef.current = [{ x: sx, y: sy, t: now }];
+      const laserEl: LaserElement = {
+        id: createId('lsr'),
+        type: 'laser',
+        color: '#EF4444',
+        size: 10,
+        opacity: 1,
+        points: [sx, sy],
+        updatedAtMs: Date.now(),
+      };
+      draftElementRef.current = laserEl;
+      ensureLaserLoop();
+      onEmitLiveStroke(laserEl, true);
+      return;
+    }
+
     if (activeTool === 'pen' || activeTool === 'highlighter') {
       clearHoldSnapTimer();
       dismissSnapBanner();
@@ -677,6 +880,50 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     const draft = draftElementRef.current;
     if (!draft) return;
+
+    // Ephemeral Glowing Laser Pointer (streams live, fades smoothly, never saved to board)
+    if (draft.type === 'laser') {
+      const nativeEvt = e.nativeEvent as PointerEvent;
+      const rawCoalesced =
+        typeof nativeEvt.getCoalescedEvents === 'function'
+          ? nativeEvt.getCoalescedEvents()
+          : null;
+      const events = rawCoalesced && rawCoalesced.length > 0 ? rawCoalesced : [nativeEvt];
+      const now = performance.now();
+      const trail = localLaserTrailRef.current;
+      let added = false;
+
+      for (const ce of events) {
+        const cPt = toVirtualCoords(ce.clientX, ce.clientY);
+        const rx = roundCoord(cPt.x);
+        const ry = roundCoord(cPt.y);
+        const last = trail[trail.length - 1];
+        if (!last || Math.hypot(rx - last.x, ry - last.y) >= 2) {
+          trail.push({ x: rx, y: ry, t: now });
+          added = true;
+        }
+      }
+
+      if (!added) return;
+      if (trail.length > 72) {
+        localLaserTrailRef.current = trail.slice(-72);
+      }
+      ensureLaserLoop();
+
+      const recentSlice = localLaserTrailRef.current.slice(-18);
+      const flatPts: number[] = [];
+      for (const p of recentSlice) {
+        flatPts.push(p.x, p.y);
+      }
+      const updatedLaser: LaserElement = {
+        ...draft,
+        points: flatPts,
+        updatedAtMs: Date.now(),
+      };
+      draftElementRef.current = updatedLaser;
+      onEmitLiveStroke(updatedLaser);
+      return;
+    }
 
     // Hold-to-Snap active modes: live line endpoint steering or locked closed shape
     if (holdSnappedModeRef.current === 'line' && draft.type === 'line') {
@@ -851,6 +1098,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (!draft) return;
 
+    // 0. Ephemeral Laser Pointer: never commit to board elements or Undo history
+    if (draft.type === 'laser') {
+      return;
+    }
+
     // 1. If already snapped via Hold-to-Snap, commit snapped shape & offer "Kembalikan Asli"
     if (snappedMode !== 'none') {
       onAddElement(draft);
@@ -976,6 +1228,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   return (
     <div
       ref={containerRef}
+      onDragOver={handleDragOverCanvas}
+      onDragLeave={handleDragLeaveCanvas}
+      onDrop={(e) => void handleDropOnCanvas(e)}
       className="relative w-full aspect-[16/9] max-h-full rounded-xl overflow-hidden shadow-md border border-slate-300/80 bg-white select-none"
     >
       <canvas
@@ -986,6 +1241,18 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         onPointerCancel={finishInteraction}
         className={`block w-full h-full board-touch-surface ${cursorClass}`}
       />
+
+      {/* Drag-and-Drop Image Overlay */}
+      {isDragOverImage && !readOnly && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-teal-950/35 backdrop-blur-[2px] border-4 border-dashed border-teal-400 rounded-xl">
+          <div className="flex items-center gap-2.5 rounded-2xl bg-slate-900/95 text-white px-5 py-3 shadow-2xl border border-teal-400/50">
+            <ImagePlus className="w-5 h-5 text-teal-400 shrink-0" />
+            <span className="text-sm font-bold">
+              Lepaskan gambar di sini untuk disisipkan ke papan
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Contextual Floating Action Bar for Selected Object (Select/Move Mode) */}
       {selectedElement && selectionBarPos && !textEditor && !stickyEditor && (
@@ -1035,6 +1302,29 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {selectedElement.type === 'image' && (
+            <div className="flex items-center gap-0.5 pr-1 border-r border-slate-700">
+              <button
+                type="button"
+                onClick={() => handleResizeSelectedImage(0.84)}
+                title="Perkecil gambar"
+                className="min-h-[34px] px-2 rounded-lg hover:bg-slate-800 text-xs font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+              >
+                <ZoomOut className="w-3.5 h-3.5 text-teal-400" />
+                <span className="hidden sm:inline">Kecilkan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleResizeSelectedImage(1.18)}
+                title="Perbesar gambar"
+                className="min-h-[34px] px-2 rounded-lg hover:bg-slate-800 text-xs font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+              >
+                <ZoomIn className="w-3.5 h-3.5 text-teal-400" />
+                <span className="hidden sm:inline">Besarkan</span>
+              </button>
             </div>
           )}
 

@@ -175,6 +175,8 @@ function parseUrlParams(): { viewMode: ViewMode; roomId: string } {
     viewMode = 'tablet';
   } else if (rawView === 'extend') {
     viewMode = 'extend';
+  } else if (rawView === 'viewer' || rawView === 'audience' || rawView === 'peserta') {
+    viewMode = 'viewer';
   } else if (rawView === 'projector' || rawView === 'main' || rawView === 'slides') {
     viewMode = 'projector';
   } else {
@@ -388,11 +390,11 @@ export function useWhiteboardSync() {
   }, []);
 
   useEffect(() => {
-    if (!authReady || user) return;
+    if (!authReady || user || viewMode === 'viewer') return;
     if (anonAttemptedRef.current) return;
     anonAttemptedRef.current = true;
     void ensureAnonymousSession();
-  }, [authReady, user, ensureAnonymousSession]);
+  }, [authReady, user, viewMode, ensureAnonymousSession]);
 
   // Persist local room state
   const saveToLocal = useCallback(
@@ -455,6 +457,7 @@ export function useWhiteboardSync() {
 
   const broadcastLocalState = useCallback(
     (snapshot: PersistedRoomLocal, skipPeerState = false) => {
+      if (viewMode === 'viewer') return;
       if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
       channelRef.current?.postMessage({
         senderId: boardDeviceIdRef.current,
@@ -499,8 +502,8 @@ export function useWhiteboardSync() {
         const incomingTs = typeof incoming.updatedAtMs === 'number' ? incoming.updatedAtMs : 0;
         const localTs = boardRevisionAtRef.current;
 
-        // First connection to this room before any local edits: adopt PC/Laptop Host's active board & notify once
-        if (isFirstHandshake && !hasLocalEditsSinceJoinRef.current) {
+        // First connection to this room before any local edits (or Audience Viewer always): adopt Host's active board
+        if (viewMode === 'viewer' || (isFirstHandshake && !hasLocalEditsSinceJoinRef.current)) {
           hasInitialHostSyncRef.current = true;
           const nextActiveId = incoming.activePageId || incoming.pages[0].pageId;
           const nextTitle = incoming.title || 'obeecreatives — Sesi Papan Tulis';
@@ -512,17 +515,21 @@ export function useWhiteboardSync() {
           setActivePageId(nextActiveId);
           setRoomTitle(nextTitle);
           setRemoteLiveElement(null);
-          setLastHostSyncedAt(Date.now());
+          if (isFirstHandshake) {
+            setLastHostSyncedAt(Date.now());
+          }
           const saved = saveToLocal(incoming.pages, nextActiveId, {
             title: nextTitle,
             updatedAtMs: incomingTs,
           });
-          channelRef.current?.postMessage({
-            senderId: boardDeviceIdRef.current,
-            type: 'state',
-            roomId,
-            payload: saved,
-          } satisfies BroadcastPacket);
+          if (viewMode !== 'viewer') {
+            channelRef.current?.postMessage({
+              senderId: boardDeviceIdRef.current,
+              type: 'state',
+              roomId,
+              payload: saved,
+            } satisfies BroadcastPacket);
+          }
           return;
         }
 
@@ -676,7 +683,7 @@ export function useWhiteboardSync() {
 
   // Load user's private custom templates from Firestore when authenticated (anonymous or Google)
   useEffect(() => {
-    if (!authReady || !user) return;
+    if (!authReady || !user || viewMode === 'viewer') return;
 
     const tplPath = `users/${user.uid}/templates`;
     const q = query(collection(db, tplPath), where('userId', '==', user.uid));
@@ -711,6 +718,13 @@ export function useWhiteboardSync() {
 
   // Firestore Room + Pages + LiveStroke Real-Time Synchronization (Zero Email, Zero PIN)
   useEffect(() => {
+    if (viewMode === 'viewer') {
+      // Audience Viewer is strictly read-only and receives live updates directly via WebRTC P2P & BroadcastChannel
+      setCloudState('local');
+      setCloudMessage('Mode Tontonan Peserta (Read-Only) via koneksi langsung.');
+      return;
+    }
+
     if (!authReady) {
       setCloudState('connecting');
       setCloudMessage('Menyiapkan koneksi cloud otomatis...');
@@ -983,6 +997,7 @@ export function useWhiteboardSync() {
   }, [pages, activePageId]);
 
   const canPushCloud = useCallback(() => {
+    if (viewMode === 'viewer') return false;
     if (!userRef.current) return false;
     if (cloudStateRef.current !== 'synced') return false;
     if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return false;
@@ -1058,6 +1073,7 @@ export function useWhiteboardSync() {
   // Stream live stroke while drawing (~35ms on Direct P2P / BroadcastChannel, ~70ms on Firestore)
   const emitLiveStroke = useCallback(
     (element: CanvasElement | null, force = false) => {
+      if (viewMode === 'viewer') return;
       if (viewMode === 'tablet' && !isLiveBroadcastRef.current) return;
       const now = Date.now();
       const pid = activePageIdRef.current;
@@ -1105,6 +1121,7 @@ export function useWhiteboardSync() {
         | { kind: 'upsert'; element: CanvasElement }
         | { kind: 'remove'; elementId: string }
     ) => {
+      if (viewMode === 'viewer') return;
       const targetId = activePageIdRef.current;
       const currentPages = pagesRef.current;
       const currentPage = currentPages.find((p) => p.pageId === targetId);

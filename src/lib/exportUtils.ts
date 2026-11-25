@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import { FlipchartPage, VIRTUAL_HEIGHT, VIRTUAL_WIDTH } from '../types/whiteboard';
-import { renderBoardCanvas } from './canvasRenderer';
+import { preloadElementsImages, renderBoardCanvas } from './canvasRenderer';
 
 function renderPageToDataURL(page: FlipchartPage, scale = 2, footerLabel?: string): string {
   const canvas = document.createElement('canvas');
@@ -44,15 +44,22 @@ function safeFileSlug(name: string): string {
   );
 }
 
-export function exportPageAsPNG(page: FlipchartPage, roomCode: string) {
+export async function exportPageAsPNG(page: FlipchartPage, roomCode: string) {
+  await preloadElementsImages(page.elements);
   const dataUrl = renderPageToDataURL(page, 2);
   if (!dataUrl) return;
   const stamp = new Date().toISOString().slice(0, 10);
   triggerDownload(dataUrl, `${safeFileSlug(roomCode)}-${safeFileSlug(page.name)}-${stamp}.png`);
 }
 
-export function exportAllPagesAsPDF(pages: FlipchartPage[], roomTitle: string, roomCode: string) {
+export async function exportAllPagesAsPDF(
+  pages: FlipchartPage[],
+  roomTitle: string,
+  roomCode: string
+) {
   if (pages.length === 0) return;
+
+  await Promise.all(pages.map((p) => preloadElementsImages(p.elements)));
 
   const pdf = new jsPDF({
     orientation: 'landscape',
